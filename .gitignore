@@ -1,0 +1,18 @@
+# Environment variables & Private Keys
+.env
+*.key
+secrets.json
+
+# Python & Virtual Envs
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Smart Contract Compilation Output
+artifacts/
+build/
+cache/
+node_modules/
+contracts/lib/
+lib/
