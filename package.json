@@ -1,0 +1,35 @@
+{
+  "name": "genesis-node",
+  "version": "1.0.0",
+  "description": "Sovereign Blockchain, Token, App, and Ecosystem",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/100000s/Genesis.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/100000s/Genesis/issues"
+  },
+  "homepage": "https://github.com/100000s/Genesis#readme",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.15",
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
+    "@types/dotenv": "^6.1.1",
+    "hardhat": "^3.13.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
+}

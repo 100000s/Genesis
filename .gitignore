@@ -16,3 +16,8 @@ cache/
 node_modules/
 contracts/lib/
 lib/
+.venv/
+node_modules/
+build/
+cache/
+artifacts/

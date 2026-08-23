@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+
+contract TLSNotaryAttestationVerifier {
+    using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
+
+    address public immutable trustedTLSNotaryVerifierNode;
+
+    mapping(bytes32 => bool) public usedProofHashes;
+
+    event WebDataVerified(address indexed user, bytes32 indexed dataHash);
+
+    constructor(address _trustedVerifier) {
+        trustedTLSNotaryVerifierNode = _trustedVerifier;
+    }
+
+    function verifyTLSNotaryClaim(
+        bytes32 dataHash,
+        uint256 timestamp,
+        bytes memory signature
+    ) external {
+        bytes32 proofPayload = keccak256(abi.encodePacked(msg.sender, dataHash, timestamp));
+        bytes32 ethSignedMessageHash = proofPayload.toEthSignedMessageHash();
+
+        require(!usedProofHashes[proofPayload], "Proof already submitted");
+        require(
+            ethSignedMessageHash.recover(signature) == trustedTLSNotaryVerifierNode,
+            "Invalid Verifier Signature"
+        );
+
+        usedProofHashes[proofPayload] = true;
+
+        // Perform protocol action upon valid Web2 data verification
+        emit WebDataVerified(msg.sender, dataHash);
+    }
+}

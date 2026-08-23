@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+
+contract GenesisDirectOracle {
+    using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
+
+    address public genesisNodePubKey;
+
+    event GoldPriceUpdated(uint256 indexed timestamp, uint256 priceInFiatWad);
+    event RatioUpdated(uint256 indexed year, uint256 ratioWad);
+
+    constructor(address _genesisNodePubKey) {
+        genesisNodePubKey = _genesisNodePubKey;
+    }
+
+    /**
+     * @notice Allows submitting Gold Price directly signed by the Genesis Node Daemon
+     */
+    function updateGoldPriceDirect(
+        uint256 priceInFiatWad,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external {
+        // Prevent stale price submissions (e.g., within 1 hour)
+        require(block.timestamp - timestamp <= 1 hours, "Oracle: Stale price data");
+
+        bytes32 messageHash = keccak256(abi.encodePacked(priceInFiatWad, timestamp, block.chainid));
+        bytes32 ethSignedMessageHash = messageHash.toEthSignedMessageHash();
+
+        address recoveredSigner = ethSignedMessageHash.recover(signature);
+        require(recoveredSigner == genesisNodePubKey, "Oracle: Invalid node signature");
+
+        // Execute state updates...
+        emit GoldPriceUpdated(timestamp, priceInFiatWad);
+    }
+}

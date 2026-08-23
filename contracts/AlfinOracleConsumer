@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@chainlink/contracts/src/v0.8/functions/v1_0/FunctionsClient.sol";
+import "@chainlink/contracts/src/v0.8/functions/v1_0/libraries/FunctionsRequest.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+interface IGenesisIssuance {
+    function updateFedRatio(uint256 year, uint256 fedRatio) external;
+    function updateStateRatio(uint8 stateId, uint256 year, uint256 stateRatio) external;
+}
+
+contract AlfinOracleConsumer is FunctionsClient, Ownable {
+    using FunctionsRequest for FunctionsRequest.Request;
+
+    IGenesisIssuance public genesisIssuance;
+    bytes32 public donId; // Chainlink DON ID
+    uint64 public subscriptionId;
+    uint32 public callbackGasLimit = 300000;
+
+    struct PendingRequest {
+        uint256 year;
+        uint8 stateId;
+        bool isFed;
+    }
+
+    mapping(bytes32 => PendingRequest) public pendingRequests;
+
+    event RatioRequested(bytes32 indexed requestId, uint256 year, uint8 stateId, bool isFed);
+    event RatioFulfilled(bytes32 indexed requestId, uint256 ratioWad);
+
+    constructor(
+        address router, 
+        bytes32 _donId, 
+        uint64 _subId, 
+        address _genesisIssuance
+    ) FunctionsClient(router) Ownable(msg.sender) {
+        donId = _donId;
+        subscriptionId = _subId;
+        genesisIssuance = IGenesisIssuance(_genesisIssuance);
+    }
+
+    /**
+     * @notice Initiates off-chain scraping request to Chainlink DON
+     */
+    function requestFiscalRatio(
+        string memory sourceJs,
+        uint256 year,
+        bool isFed,
+        uint8 stateId,
+        string memory apiUrl
+    ) external onlyOwner returns (bytes32 requestId) {
+        FunctionsRequest.Request memory req;
+        req.initializeRequestForInlineJavaScript(sourceJs);
+
+        string[] memory args = new string[](4);
+        args[0] = Strings.toString(year);
+        args[1] = isFed ? "fed" : "state";
+        args[2] = Strings.toString(stateId);
+        args[3] = apiUrl;
+
+        req.setArgs(args);
+
+        requestId = _sendRequest(
+            req.encodeCBOR(),
+            subscriptionId,
+            callbackGasLimit,
+            donId
+        );
+
+        pendingRequests[requestId] = PendingRequest({
+            year: year,
+            stateId: stateId,
+            isFed: isFed
+        });
+
+        emit RatioRequested(requestId, year, stateId, isFed);
+    }
+
+    /**
+     * @notice Callback invoked automatically by the Chainlink DON with the calculated WAD ratio
+     */
+    function fulfillRequest(
+        bytes32 requestId,
+        bytes memory response,
+        bytes memory err
+    ) internal override {
+        require(err.length == 0, "Chainlink Functions execution error");
+        PendingRequest memory req = pendingRequests[requestId];
+        require(req.year > 0, "Unknown Request ID");
+
+        uint256 ratioWad = abi.decode(response, (uint256));
+
+        if (req.isFed) {
+            genesisIssuance.updateFedRatio(req.year, ratioWad);
+        } else {
+            genesisIssuance.updateStateRatio(req.stateId, req.year, ratioWad);
+        }
+
+        delete pendingRequests[requestId];
+        emit RatioFulfilled(requestId, ratioWad);
+    }
+}

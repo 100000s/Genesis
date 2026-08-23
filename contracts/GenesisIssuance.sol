@@ -1,24 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+interface IGenCredsVerifier {
+    function verifyStateResidency(bytes calldata zkProof, address user) external view returns (uint8 stateId, bool isValid);
+}
+
 /**
  * @title GenesisIssuance
- * @notice Manages per-capita dynamic GenToken allocations adjusted annually by budget ratios.
- * @dev Replaces available balances on January 1st based on fiscal receipt changes.
+ * @notice Manages per-capita dynamic GenToken allocations adjusted annually by ALFIN total asset ratios.
  */
-contract GenesisIssuance {
+contract GenesisIssuance is Ownable, ReentrancyGuard {
     uint256 public constant WAD = 1e18;
     uint256 public constant BASE_ALLOCATION = 50 * WAD; // 50 tokens baseline (2026)
     uint256 public constant LAUNCH_YEAR = 2026;
+    uint256 public constant SECONDS_PER_YEAR = 365 days; // Standard calendar year reference
 
-    address public owner;
     address public oracle;
+    IGenCredsVerifier public genCredsVerifier;
 
-    // Federal annual multiplier per year (Year => Multiplier in WAD)
-    // Year 2026 starts at 1.0 (1e18)
+    // Federal annual base per year (Year => Base in WAD)
     mapping(uint256 => uint256) public fedAnnualBase;
 
-    // State annual multiplier per year per state (StateID => Year => Base in WAD)
+    // State annual base per year per state (StateID => Year => Base in WAD)
     mapping(uint8 => mapping(uint256 => uint256)) public stateAnnualBase;
 
     struct AccountInfo {
@@ -29,116 +35,131 @@ contract GenesisIssuance {
 
     mapping(address => AccountInfo) public accounts;
 
-    event RatiosUpdated(uint256 indexed year, uint256 fedBase, uint8 stateId, uint256 stateBase);
+    event FedRatioUpdated(uint256 indexed year, uint256 fedRatio, uint256 newFedBase);
+    event StateRatioUpdated(uint8 indexed stateId, uint256 indexed year, uint256 stateRatio, uint256 newStateBase);
     event WithdrawalExecuted(address indexed user, uint256 amount, int256 remainingBalance);
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "GenesisIssuance: Caller is not owner");
-        _;
-    }
+    event OracleUpdated(address indexed newOracle);
 
     modifier onlyOracle() {
         require(msg.sender == oracle, "GenesisIssuance: Caller is not oracle");
         _;
     }
 
-    constructor(address _oracle) {
-        owner = msg.sender;
+    constructor(address _oracle, address _genCredsVerifier) Ownable(msg.sender) {
+        require(_oracle != address(0) && _genCredsVerifier != address(0), "Invalid zero address");
         oracle = _oracle;
+        genCredsVerifier = IGenCredsVerifier(_genCredsVerifier);
 
         // Initialize 2026 baseline allocations (50 Fed + 50 State = 100 GEN Total)
         fedAnnualBase[LAUNCH_YEAR] = BASE_ALLOCATION;
     }
 
-    /**
-     * @notice Registers or updates verified state residency for a user via ZK-SBT verification.
-     */
-    function registerResident(address user, uint8 stateId) external onlyOwner {
-        require(stateId >= 1 && stateId <= 50, "GenesisIssuance: Invalid State ID");
-        accounts[user].stateId = stateId;
-        accounts[user].isVerified = true;
+    function setOracle(address _newOracle) external onlyOwner {
+        require(_newOracle != address(0), "Invalid zero address");
+        oracle = _newOracle;
+        emit OracleUpdated(_newOracle);
+    }
 
-        // Ensure state baseline is initialized for 2026
+    /**
+     * @notice Returns the current calendar year derived from block.timestamp
+     */
+    function getCurrentYear() public view returns (uint256) {
+        // Unix epoch timestamp for Jan 1, 2026 00:00:00 UTC = 1767225600
+        if (block.timestamp < 1767225600) return LAUNCH_YEAR;
+        return LAUNCH_YEAR + ((block.timestamp - 1767225600) / SECONDS_PER_YEAR);
+    }
+
+    /**
+     * @notice Registers user residency directly using GenCreds ZK Proof verification
+     */
+    function registerResidentWithZK(bytes calldata zkProof) external {
+        (uint8 stateId, bool isValid) = genCredsVerifier.verifyStateResidency(zkProof, msg.sender);
+        require(isValid, "GenesisIssuance: Invalid ZK Proof");
+        require(stateId >= 1 && stateId <= 50, "GenesisIssuance: Invalid State ID");
+
+        accounts[msg.sender].stateId = stateId;
+        accounts[msg.sender].isVerified = true;
+
+        uint256 currentYear = getCurrentYear();
         if (stateAnnualBase[stateId][LAUNCH_YEAR] == 0) {
             stateAnnualBase[stateId][LAUNCH_YEAR] = BASE_ALLOCATION;
         }
     }
 
     /**
-     * @notice Sets the newly calculated base for Federal or State stream on Jan 1st.
-     * @param year Current year (>= 2027)
-     * @param fedRatio Ratio in WAD: Receipts(FY t-3) / Receipts(FY t-2)
-     * @param stateId State ID (1-50)
-     * @param stateRatio Ratio in WAD for the given state
+     * @notice Sets Federal total asset inverse ratio multiplier on Jan 1st.
+     * @param year Target year (>= 2027)
+     * @param fedRatio Ratio in WAD: FY(t-2) Total Assets / FY(t-1) Total Assets
      */
-    function updateAnnualRatios(
-        uint256 year,
-        uint256 fedRatio,
-        uint8 stateId,
-        uint256 stateRatio
-    ) external onlyOracle {
+    function updateFedRatio(uint256 year, uint256 fedRatio) external onlyOracle {
         require(year > LAUNCH_YEAR, "GenesisIssuance: Adjustments begin in 2027");
+        require(fedRatio > 0, "GenesisIssuance: Ratio must be > 0");
 
-        // Compute federal base: Base(t) = Base(t-1) * Ratio
-        uint256 prevFedBase = fedAnnualBase[year - 1] > 0 ? fedAnnualBase[year - 1] : BASE_ALLOCATION;
+        uint256 prevFedBase = getLatestFedBase(year - 1);
         fedAnnualBase[year] = (prevFedBase * fedRatio) / WAD;
 
-        // Compute state base: StateBase(t) = StateBase(t-1) * StateRatio
-        uint256 prevStateBase = stateAnnualBase[stateId][year - 1] > 0 
-            ? stateAnnualBase[stateId][year - 1] 
-            : BASE_ALLOCATION;
-            
-        stateAnnualBase[stateId][year] = (prevStateBase * stateRatio) / WAD;
-
-        emit RatiosUpdated(year, fedAnnualBase[year], stateId, stateAnnualBase[stateId][year]);
+        emit FedRatioUpdated(year, fedRatio, fedAnnualBase[year]);
     }
 
     /**
-     * @notice Calculates the real-time gross base balance available for a specific year.
+     * @notice Sets State total asset inverse ratio multiplier for a specific state on Jan 1st.
+     * @param stateId State ID (1 to 50)
+     * @param year Target year (>= 2027)
+     * @param stateRatio Ratio in WAD for the given state
      */
-    function getGrossBase(address user, uint256 currentYear) public view returns (uint256) {
+    function updateStateRatio(uint8 stateId, uint256 year, uint256 stateRatio) external onlyOracle {
+        require(stateId >= 1 && stateId <= 50, "GenesisIssuance: Invalid State ID");
+        require(year > LAUNCH_YEAR, "GenesisIssuance: Adjustments begin in 2027");
+        require(stateRatio > 0, "GenesisIssuance: Ratio must be > 0");
+
+        uint256 prevStateBase = getLatestStateBase(stateId, year - 1);
+        stateAnnualBase[stateId][year] = (prevStateBase * stateRatio) / WAD;
+
+        emit StateRatioUpdated(stateId, year, stateRatio, stateAnnualBase[stateId][year]);
+    }
+
+    function getLatestFedBase(uint256 year) public view returns (uint256) {
+        while (year >= LAUNCH_YEAR) {
+            if (fedAnnualBase[year] > 0) return fedAnnualBase[year];
+            unchecked { year--; }
+        }
+        return BASE_ALLOCATION;
+    }
+
+    function getLatestStateBase(uint8 stateId, uint256 year) public view returns (uint256) {
+        while (year >= LAUNCH_YEAR) {
+            if (stateAnnualBase[stateId][year] > 0) return stateAnnualBase[stateId][year];
+            unchecked { year--; }
+        }
+        return BASE_ALLOCATION;
+    }
+
+    function getGrossBase(address user) public view returns (uint256) {
         AccountInfo memory acc = accounts[user];
         if (!acc.isVerified) return 0;
 
-        uint256 fedBase = fedAnnualBase[currentYear];
-        if (fedBase == 0 && currentYear > LAUNCH_YEAR) {
-            fedBase = fedAnnualBase[LAUNCH_YEAR]; // Fallback to last known base if oracle delay
-        }
-
-        uint256 stateBase = stateAnnualBase[acc.stateId][currentYear];
-        if (stateBase == 0 && currentYear > LAUNCH_YEAR) {
-            stateBase = stateAnnualBase[acc.stateId][LAUNCH_YEAR];
-        }
+        uint256 currentYear = getCurrentYear();
+        uint256 fedBase = getLatestFedBase(currentYear);
+        uint256 stateBase = getLatestStateBase(acc.stateId, currentYear);
 
         return fedBase + stateBase;
     }
 
-    /**
-     * @notice Returns the available net spendable balance (can be negative).
-     * @dev Available = GrossBase(CurrentYear) - NetWithdrawals
-     */
-    function getAvailableBalance(address user, uint256 currentYear) public view returns (int256) {
+    function getAvailableBalance(address user) public view returns (int256) {
         AccountInfo memory acc = accounts[user];
         if (!acc.isVerified) return 0;
 
-        uint256 grossBase = getGrossBase(user, currentYear);
+        uint256 grossBase = getGrossBase(user);
         return int256(grossBase) - int256(acc.netWithdrawals);
     }
 
-    /**
-     * @notice Executes a withdrawal or transfer attempt.
-     */
-    function withdraw(uint256 amount, uint256 currentYear) external {
-        int256 available = getAvailableBalance(msg.sender, currentYear);
-
+    function withdraw(uint256 amount) external nonReentrant {
+        int256 available = getAvailableBalance(msg.sender);
         require(available >= int256(amount), "GenesisIssuance: Insufficient net available balance");
 
-        // Debit account
         accounts[msg.sender].netWithdrawals += amount;
 
-        int256 remaining = getAvailableBalance(msg.sender, currentYear);
+        int256 remaining = getAvailableBalance(msg.sender);
         emit WithdrawalExecuted(msg.sender, amount, remaining);
-
-        // Standard ERC-20 transfer out logic here...
     }
 }

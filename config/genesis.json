@@ -1,0 +1,27 @@
+{
+  "config": {
+    "chainId": 7770,
+    "homesteadBlock": 0,
+    "eip155Block": 0,
+    "eip158Block": 0,
+    "byzantiumBlock": 0,
+    "genesisParams": {
+      "networkName": "Genesis-Mainnet",
+      "feeModel": "zero_fee",
+      "monthlyEpochMintPercent": 0.5,
+      "distribution": {
+        "validatorsPercent": 60,
+        "verifiersPercent": 25,
+        "issuersPercent": 15
+      }
+    }
+  },
+  "alloc": {
+    "0x0000000000000000000000000000000000000100": {
+      "comment": "Pre-compiled GenesisRegistry Contract Address",
+      "balance": "0x0"
+    }
+  },
+  "gasLimit": "0x1fffffffffffff",
+  "difficulty": "0x1"
+}
