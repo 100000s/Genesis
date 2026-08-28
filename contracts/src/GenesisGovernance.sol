@@ -6,6 +6,11 @@ contract GenesisGovernance {
     struct GiP { bytes32 id; address proposer; string title; string specificationURI; bytes32 specificationHash; uint64 votingEnds; Status status; }
     address public owner;
     uint64 public constant MIN_VOTING_PERIOD = 7 days;
+    uint64 public constant LAST_CALL_PERIOD = 28 days;
+    uint64 public constant ACTIVATION_WINDOW = 12 weeks;
+    uint256 public constant QUORUM_BPS = 5001;
+    mapping(address => mapping(uint8 => uint256)) public quarterlyCredits;
+    mapping(address => mapping(uint8 => address)) public delegate;
     mapping(bytes32 => GiP) public proposals;
     mapping(bytes32 => mapping(address => bool)) public voted;
     mapping(bytes32 => uint256) public approvals;
@@ -19,11 +24,15 @@ contract GenesisGovernance {
         proposals[id] = GiP(id, msg.sender, title, specificationURI, specificationHash, uint64(block.timestamp) + votingPeriod, Status.Proposed);
         emit GiPProposed(id, msg.sender, title, specificationHash, uint64(block.timestamp) + votingPeriod);
     }
-    function vote(bytes32 id, bool support) external onlyOwner {
+    function setCredits(uint8 group, uint256 credits) external onlyOwner { require(group < 6 && credits <= 150, "GenesisGovernance: invalid credits"); quarterlyCredits[msg.sender][group] = credits; }
+    function setDelegate(uint8 group, address delegateAddress) external { require(group < 6, "GenesisGovernance: invalid group"); delegate[msg.sender][group] = delegateAddress; }
+    function vote(bytes32 id, uint8 group, uint256 credits, bool support) external {
         GiP storage proposal = proposals[id];
         require(proposal.status == Status.Proposed && block.timestamp < proposal.votingEnds && !voted[id][msg.sender], "GenesisGovernance: vote unavailable");
+        require(group < 6 && credits > 0 && credits <= quarterlyCredits[msg.sender][group], "GenesisGovernance: insufficient credits");
         voted[id][msg.sender] = true;
-        if (support) approvals[id]++; else rejections[id]++;
+        uint256 weight = credits * credits;
+        if (support) approvals[id] += weight; else rejections[id] += weight;
         emit GiPVoted(id, msg.sender, support);
     }
     function resolve(bytes32 id) external onlyOwner {
