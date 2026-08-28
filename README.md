@@ -16,22 +16,34 @@ That’s inclusion on steroids!
 
 Since these physical notes (“Gens”) cannot circulate until they are loaded with digital tokens matching their face value, no digital verification is necessary. But scanning the interactive dynamic QR can reveal the note’s entire digital history. Each counterfeit-resistant physical note QR will contain detailed metadata:
 
-Denomination
-Serial Number
-Design Version
-Vault ID
-Signature from Vault Controller
-Signature from Issuer
-Issue Date and Time
-Place and Printer of Origin
-ATM Signature, Scan Time/Location
-Last Known Scan
-Last Known Condition Score
-Note Hash (lightweight hash of any other noteworthy information about it)
+* Denomination
+* Serial Number
+* Design Version
+* Vault ID
+* Signature from Vault Controller
+* Signature from Issuer
+* Issue Date and Time
+* Place and Printer of Origin
+* ATM Signature, Scan Time/Location
+* Last Known Scan
+* Last Known Condition Score
+* Note Hash (lightweight hash of any other noteworthy information about it)
 
 Unlike Bitcoin, which apportions new coins to owners of competing “farms” packed with expensive energy-consuming mining rigs capable of performing difficult mathematical calculations (PoW - "proof of work"), or Ethereum, which apportions new coins to stakeholders based on the massiveness of their holdings (PoS - "proof of stake"), Genesis tokens are minted on demand in limited amounts for free (PoE - proof of existence). Genesis is a universal citizen/resident airdrop accompanied by a UBI (universal basic income) framework for residents of tax-friendly states.
 
-New tokens are minted upon withdrawal by US citizens and US state residents from available balances based on federal and state budgetary adjustments, and to workers in the Genesis ecosystem. Inflation is capped at 1%, with citizen/resident withdrawals limited to a .5% increase from the prior week, and a Worker split totaling .5%. The Worker split is derived from circulating digital GenesisTokens per epoch, current purchase escrow value per epoch, and cumulative value of all circulating notes. They are split among: Validators (PC/Pi nodes 40%) and Verifiers (smartphone nodes 30%), proportionate to uptime, block production, and attestation accuracy, to issuers (ATMs/printers 20%), and to Arbitrators (10%). The 20% that printers of physical counterfeit-resistant Gens receive will be further split: 50% as a hardware bounty, 40% proportionate to anonymous active presence, and 10% for maintenance, bill recycling, and new note design. Inactivity will roll over to the next monthly epoch. The arbitral awards will be evenly distributed among active arbitrators at the beginning of the succeeding month. 
+New tokens are minted upon withdrawal by US citizens and US state residents from available balances based on federal and state budgetary adjustments, and to workers in the Genesis ecosystem. Inflation is capped at 1%, with citizen/resident withdrawals limited to a .5% increase from the prior week, and a Worker split totaling .5%. The Worker split is derived from circulating digital GenesisTokens per epoch, current purchase escrow value per epoch, and cumulative value of all circulating notes. They are split among: 
+
+* Validators (PC/Pi nodes 40%) and Verifiers (smartphone nodes 30%), proportionate to uptime, block production, and attestation accuracy,
+* Issuers (ATMs/printers 20%), and
+* Arbitrators (10%).
+
+The 20% that printers of physical counterfeit-resistant Gens receive will be further split:
+
+* 50% as a hardware bounty,
+* 40% proportionate to anonymous active presence, and
+* 10% for maintenance, bill recycling, and new note design.
+
+Inactivity will roll over to the next monthly epoch. The arbitral awards will be evenly distributed among active arbitrators at the beginning of the succeeding month. 
 
 The available balance for all citizens will initially be 100 (50 federal and 50 state), the available balance will be adjusted dynamically and chronologically every year in accordance with the tax environment of each resident's geographic home. Beginning on January 1st, 2027, the previous available balance will be multiplied by the fraction obtained by dividing total fiscal year (FY) receipts from 2024 by those from FY2025 for the state in which the claimant resides. For example, if the budget for Alaska is reduced from 3451844007.8 to 2029743014.5, the result (approximately 1.7) is multiplied by the citizen’s previous available balance (in this case, 50), resulting in an increase to 85 state credits. Conversely, a budgetary increase will result in a reduction of available tokens. The same calculation is done for federal-based credits, and is repeated every year. 
 
