@@ -18,13 +18,13 @@ contract GenesisEscrow is ReentrancyGuard {
     struct EscrowAgreement {
         address buyer;
         address seller;
-        uint256 amountGenTokens;
+        uint256 amountGenesisTokens;
         bytes32 requiredCredentialType;
         EscrowState state;
         uint64 expiryTimestamp;
     }
 
-    IERC20 public immutable genToken;
+    IERC20 public immutable GenesisToken;
     IZkSBTVerifier public zkVerifier;
     uint256 public nextEscrowId;
 
@@ -34,9 +34,9 @@ contract GenesisEscrow is ReentrancyGuard {
     event EscrowFulfilled(uint256 indexed id, address seller);
     event EscrowDefaulted(uint256 indexed id, address buyer);
 
-    constructor(address _genToken, address _zkVerifier) {
-        require(_genToken != address(0), "Invalid token address");
-        genToken = IERC20(_genToken);
+    constructor(address _GenesisToken, address _zkVerifier) {
+        require(_GenesisToken != address(0), "Invalid token address");
+        GenesisToken = IERC20(_GenesisToken);
         zkVerifier = IZkSBTVerifier(_zkVerifier);
     }
 
@@ -49,14 +49,14 @@ contract GenesisEscrow is ReentrancyGuard {
         require(amount > 0, "Escrow amount must be > 0");
         require(seller != address(0), "Invalid seller address");
 
-        // Lock GenTokens from buyer into this escrow contract
-        require(genToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        // Lock GenesisTokens from buyer into this escrow contract
+        require(GenesisToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
 
         uint256 id = nextEscrowId++;
         escrows[id] = EscrowAgreement({
             buyer: msg.sender,
             seller: seller,
-            amountGenTokens: amount,
+            amountGenesisTokens: amount,
             requiredCredentialType: requiredCredentialType,
             state: EscrowState.AwaitingProof,
             expiryTimestamp: uint64(block.timestamp + durationSeconds)
@@ -81,8 +81,8 @@ contract GenesisEscrow is ReentrancyGuard {
 
         agreement.state = EscrowState.Completed;
 
-        // Release GenTokens to Seller
-        require(genToken.transfer(agreement.seller, agreement.amountGenTokens), "Transfer to seller failed");
+        // Release GenesisTokens to Seller
+        require(GenesisToken.transfer(agreement.seller, agreement.amountGenesisTokens), "Transfer to seller failed");
         emit EscrowFulfilled(escrowId, agreement.seller);
     }
 
@@ -93,8 +93,8 @@ contract GenesisEscrow is ReentrancyGuard {
 
         agreement.state = EscrowState.Defaulted;
 
-        // Refund GenTokens to Buyer
-        require(genToken.transfer(agreement.buyer, agreement.amountGenTokens), "Refund to buyer failed");
+        // Refund GenesisTokens to Buyer
+        require(GenesisToken.transfer(agreement.buyer, agreement.amountGenesisTokens), "Refund to buyer failed");
         emit EscrowDefaulted(escrowId, agreement.buyer);
     }
 }
