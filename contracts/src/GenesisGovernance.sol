@@ -1,43 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-
 contract GenesisGovernance {
-    enum Status { Draft, Proposed, Accepted, Rejected, Superseded }
-    struct GiP { bytes32 id; address proposer; string title; string specificationURI; bytes32 specificationHash; uint64 votingEnds; Status status; }
-    address public owner;
-    uint64 public constant MIN_VOTING_PERIOD = 7 days;
-    uint64 public constant LAST_CALL_PERIOD = 28 days;
-    uint64 public constant ACTIVATION_WINDOW = 12 weeks;
-    uint256 public constant QUORUM_BPS = 5001;
-    mapping(address => mapping(uint8 => uint256)) public quarterlyCredits;
-    mapping(address => mapping(uint8 => address)) public delegate;
-    mapping(bytes32 => GiP) public proposals;
-    mapping(bytes32 => mapping(address => bool)) public voted;
-    mapping(bytes32 => uint256) public approvals;
-    mapping(bytes32 => uint256) public rejections;
-    event GiPProposed(bytes32 indexed id, address indexed proposer, string title, bytes32 specificationHash, uint64 votingEnds);
-    event GiPVoted(bytes32 indexed id, address indexed voter, bool support);
-    modifier onlyOwner() { require(msg.sender == owner, "GenesisGovernance: owner only"); _; }
-    constructor() { owner = msg.sender; }
-    function propose(bytes32 id, string calldata title, string calldata specificationURI, bytes32 specificationHash, uint64 votingPeriod) external {
-        require(proposals[id].proposer == address(0) && votingPeriod >= MIN_VOTING_PERIOD, "GenesisGovernance: invalid proposal");
-        proposals[id] = GiP(id, msg.sender, title, specificationURI, specificationHash, uint64(block.timestamp) + votingPeriod, Status.Proposed);
-        emit GiPProposed(id, msg.sender, title, specificationHash, uint64(block.timestamp) + votingPeriod);
-    }
-    function setCredits(uint8 group, uint256 credits) external onlyOwner { require(group < 6 && credits <= 150, "GenesisGovernance: invalid credits"); quarterlyCredits[msg.sender][group] = credits; }
-    function setDelegate(uint8 group, address delegateAddress) external { require(group < 6, "GenesisGovernance: invalid group"); delegate[msg.sender][group] = delegateAddress; }
-    function vote(bytes32 id, uint8 group, uint256 credits, bool support) external {
-        GiP storage proposal = proposals[id];
-        require(proposal.status == Status.Proposed && block.timestamp < proposal.votingEnds && !voted[id][msg.sender], "GenesisGovernance: vote unavailable");
-        require(group < 6 && credits > 0 && credits <= quarterlyCredits[msg.sender][group], "GenesisGovernance: insufficient credits");
-        voted[id][msg.sender] = true;
-        uint256 weight = credits * credits;
-        if (support) approvals[id] += weight; else rejections[id] += weight;
-        emit GiPVoted(id, msg.sender, support);
-    }
-    function resolve(bytes32 id) external onlyOwner {
-        GiP storage proposal = proposals[id];
-        require(proposal.status == Status.Proposed && block.timestamp >= proposal.votingEnds, "GenesisGovernance: voting active");
-        proposal.status = approvals[id] > rejections[id] ? Status.Accepted : Status.Rejected;
-    }
+    enum Track{Authentication,Core,Interface,Knowledge,Oracle,Process} enum Status{Draft,Review,LastCall,Staged,Implemented,NotImplemented}
+    uint64 public constant REVIEW_PERIOD=7 days; uint64 public constant LAST_CALL_PERIOD=28 days; uint64 public constant ACTIVATION_WINDOW=12 weeks; uint256 public constant REQUIRED_BPS=5001; address public owner;
+    struct GiP{bytes32 id;Track track;address proposer;bytes32 specificationHash;bytes32 ordinalHash;uint64 createdAt;uint64 lastCallEnds;Status status;}
+    mapping(bytes32=>GiP) public proposals; mapping(bytes32=>mapping(address=>bool)) public voted; mapping(bytes32=>uint256) public yes; mapping(bytes32=>uint256) public no; mapping(address=>uint256) public credits; mapping(address=>address) public delegateOf;
+    event GiPProposed(bytes32 indexed id,Track track,bytes32 specificationHash,bytes32 ordinalHash); event VoteCast(bytes32 indexed id,address indexed voter,bool support,uint256 weight); event StatusChanged(bytes32 indexed id,Status status);
+    modifier onlyOwner(){require(msg.sender==owner,"Governance: owner");_;} constructor(){owner=msg.sender;}
+    function propose(bytes32 id,Track track,bytes32 specificationHash,bytes32 ordinalHash) external{require(proposals[id].proposer==address(0),"Governance: exists");proposals[id]=GiP(id,track,msg.sender,specificationHash,ordinalHash,uint64(block.timestamp),uint64(block.timestamp)+REVIEW_PERIOD+LAST_CALL_PERIOD,Status.Review);emit GiPProposed(id,track,specificationHash,ordinalHash);}
+    function issueCredits(address who,uint256 amount) external onlyOwner{require(amount<=150,"Governance: credits");credits[who]=amount;} function setDelegate(address who) external{delegateOf[msg.sender]=who;}
+    function enterLastCall(bytes32 id) external onlyOwner{GiP storage p=proposals[id];require(p.status==Status.Review&&block.timestamp>=p.createdAt+REVIEW_PERIOD,"Governance: review");p.status=Status.LastCall;emit StatusChanged(id,p.status);}
+    function vote(bytes32 id,bool support,uint256 spent) external{GiP memory p=proposals[id];require(p.status==Status.Review||p.status==Status.LastCall,"Governance: inactive");require(block.timestamp<p.lastCallEnds&&!voted[id][msg.sender]&&spent>0&&spent<=credits[msg.sender],"Governance: vote");voted[id][msg.sender]=true;uint256 weight=spent*spent;if(support)yes[id]+=weight;else no[id]+=weight;emit VoteCast(id,msg.sender,support,weight);}
+    function resolve(bytes32 id) external onlyOwner{GiP storage p=proposals[id];require(p.status==Status.LastCall&&block.timestamp>=p.lastCallEnds,"Governance: window");p.status=yes[id]*BPS()/ (yes[id]+no[id])>=REQUIRED_BPS?Status.Staged:Status.NotImplemented;emit StatusChanged(id,p.status);}
+    function activate(bytes32 id) external onlyOwner{GiP storage p=proposals[id];require(p.status==Status.Staged&&block.timestamp<=p.lastCallEnds+ACTIVATION_WINDOW,"Governance: activation");p.status=Status.Implemented;emit StatusChanged(id,p.status);}
+    function BPS() private pure returns(uint256){return 10000;}
 }
