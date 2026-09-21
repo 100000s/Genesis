@@ -20,7 +20,7 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
     struct EscrowAgreement {
         address buyer;
         address seller;
-        uint256 amountGenTokens;
+        uint256 amountGenesisTokens;
         bytes32 requiredCredentialType;
         EscrowState state;
         uint64 expiryTimestamp;
@@ -48,7 +48,7 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         bool resolved;
     }
 
-    IERC20 public immutable genToken;
+    IERC20 public immutable GenesisToken;
     IZkSBTVerifier public zkVerifier;
     bytes32 public arbitratorCredentialType;
     uint256 public nextEscrowId;
@@ -70,23 +70,21 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
     event VoteCast(uint256 indexed id, address indexed voter, bool votedForSeller);
     event EscrowSettled(uint256 indexed id, address indexed recipient, uint256 itemValue, uint256 feePaid);
 
-    constructor(address _genToken, address _zkVerifier) Ownable(msg.sender) {
-        require(_genToken != address(0), "Invalid token address");
+    constructor(address _GenesisToken, address _zkVerifier) Ownable(msg.sender) {
+        require(_GenesisToken != address(0), "Invalid token address");
         require(_zkVerifier != address(0), "Invalid ZK verifier address");
-        genToken = IERC20(_genToken);
+        GenesisToken = IERC20(_GenesisToken);
         zkVerifier = IZkSBTVerifier(_zkVerifier);
     }
 
-    function setArbitratorCredentialType(bytes32 credentialType) external onlyOwner {
-        arbitratorCredentialType = credentialType;
-    }
+    function setArbitratorCredentialType(bytes32 credentialType) external onlyOwner { arbitratorCredentialType = credentialType; }
 
     function createEscrow(address seller, uint256 amount, bytes32 requiredCredentialType, uint64 durationSeconds)
         external nonReentrant returns (uint256)
     {
         require(amount > 0, "Escrow amount must be > 0");
         require(seller != address(0), "Invalid seller address");
-        require(genToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        require(GenesisToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
         uint256 id = nextEscrowId++;
         escrows[id] = EscrowAgreement(msg.sender, seller, amount, requiredCredentialType, EscrowState.AwaitingProof, uint64(block.timestamp + durationSeconds));
         emit EscrowCreated(id, msg.sender, seller, amount);
@@ -100,7 +98,7 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         require(block.timestamp <= agreement.expiryTimestamp, "Escrow expired");
         require(zkVerifier.verifyAttestationProof(agreement.seller, agreement.requiredCredentialType, zkProof), "Invalid ZK proof");
         agreement.state = EscrowState.Completed;
-        require(genToken.transfer(agreement.seller, agreement.amountGenTokens), "Transfer to seller failed");
+        require(GenesisToken.transfer(agreement.seller, agreement.amountGenesisTokens), "Transfer to seller failed");
         emit EscrowFulfilled(escrowId, agreement.seller);
     }
 
@@ -109,7 +107,7 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         require(block.timestamp > agreement.expiryTimestamp, "Escrow not expired");
         require(agreement.state == EscrowState.AwaitingProof, "Already settled");
         agreement.state = EscrowState.Defaulted;
-        require(genToken.transfer(agreement.buyer, agreement.amountGenTokens), "Refund to buyer failed");
+        require(GenesisToken.transfer(agreement.buyer, agreement.amountGenesisTokens), "Refund to buyer failed");
         emit EscrowDefaulted(escrowId, agreement.buyer);
     }
 
@@ -126,15 +124,10 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         require(seller != address(0) && seller != msg.sender, "Invalid seller address");
         require(itemValue > 0, "Item value must be > 0");
         purchaseId = nextPurchaseId++;
-        require(genToken.transferFrom(msg.sender, address(this), itemValue + arbitratorFeePool), "Deposit transfer failed");
+        require(GenesisToken.transferFrom(msg.sender, address(this), itemValue + arbitratorFeePool), "Deposit transfer failed");
         ArbitrationCase storage p = arbitrationCases[purchaseId];
-        p.buyer = msg.sender;
-        p.seller = seller;
-        p.itemValue = itemValue;
-        p.arbitratorFeePool = arbitratorFeePool;
-        p.creationTimestamp = uint64(block.timestamp);
-        p.selectionWindowSeconds = selectionWindowSeconds;
-        p.stage = SelectionStage.SingleArbitrator;
+        p.buyer = msg.sender; p.seller = seller; p.itemValue = itemValue; p.arbitratorFeePool = arbitratorFeePool;
+        p.creationTimestamp = uint64(block.timestamp); p.selectionWindowSeconds = selectionWindowSeconds; p.stage = SelectionStage.SingleArbitrator;
         emit PurchaseEscrowCreated(purchaseId, msg.sender, seller, itemValue, arbitratorFeePool);
     }
 
@@ -198,12 +191,12 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         ArbitrationCase storage p = arbitrationCases[id];
         p.resolved = true;
         uint256 feePerArb = activeArbitratorCount == 0 ? 0 : p.arbitratorFeePool / activeArbitratorCount;
-        require(genToken.transfer(recipient, p.itemValue), "Item transfer failed");
-        if (activeArbitratorCount == 1) require(genToken.transfer(p.singleArbitrator, p.arbitratorFeePool), "Arbitrator fee transfer failed");
+        require(GenesisToken.transfer(recipient, p.itemValue), "Item transfer failed");
+        if (activeArbitratorCount == 1) require(GenesisToken.transfer(p.singleArbitrator, p.arbitratorFeePool), "Arbitrator fee transfer failed");
         else {
-            if (p.hasVoted[p.buyerArbitrator]) require(genToken.transfer(p.buyerArbitrator, feePerArb), "Buyer arbitrator fee failed");
-            if (p.hasVoted[p.sellerArbitrator]) require(genToken.transfer(p.sellerArbitrator, feePerArb), "Seller arbitrator fee failed");
-            if (p.hasVoted[p.chiefArbitrator]) require(genToken.transfer(p.chiefArbitrator, feePerArb), "Chief arbitrator fee failed");
+            if (p.hasVoted[p.buyerArbitrator]) require(GenesisToken.transfer(p.buyerArbitrator, feePerArb), "Buyer arbitrator fee failed");
+            if (p.hasVoted[p.sellerArbitrator]) require(GenesisToken.transfer(p.sellerArbitrator, feePerArb), "Seller arbitrator fee failed");
+            if (p.hasVoted[p.chiefArbitrator]) require(GenesisToken.transfer(p.chiefArbitrator, feePerArb), "Chief arbitrator fee failed");
         }
         emit EscrowSettled(id, recipient, p.itemValue, p.arbitratorFeePool);
     }
