@@ -73,6 +73,9 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
     constructor(address _GenesisToken, address _zkVerifier) Ownable(msg.sender) {
         require(_GenesisToken != address(0), "Invalid token address");
         require(_zkVerifier != address(0), "Invalid ZK verifier address");
+
+    constructor(address _GenesisToken, address _zkVerifier) {
+        require(_GenesisToken != address(0), "Invalid token address");
         GenesisToken = IERC20(_GenesisToken);
         zkVerifier = IZkSBTVerifier(_zkVerifier);
     }
@@ -87,6 +90,20 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         require(GenesisToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
         uint256 id = nextEscrowId++;
         escrows[id] = EscrowAgreement(msg.sender, seller, amount, requiredCredentialType, EscrowState.AwaitingProof, uint64(block.timestamp + durationSeconds));
+
+        // Lock GenesisTokens from buyer into this escrow contract
+        require(GenesisToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+
+        uint256 id = nextEscrowId++;
+        escrows[id] = EscrowAgreement({
+            buyer: msg.sender,
+            seller: seller,
+            amountGenesisTokens: amount,
+            requiredCredentialType: requiredCredentialType,
+            state: EscrowState.AwaitingProof,
+            expiryTimestamp: uint64(block.timestamp + durationSeconds)
+        });
+
         emit EscrowCreated(id, msg.sender, seller, amount);
         return id;
     }
@@ -98,6 +115,8 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         require(block.timestamp <= agreement.expiryTimestamp, "Escrow expired");
         require(zkVerifier.verifyAttestationProof(agreement.seller, agreement.requiredCredentialType, zkProof), "Invalid ZK proof");
         agreement.state = EscrowState.Completed;
+
+        // Release GenesisTokens to Seller
         require(GenesisToken.transfer(agreement.seller, agreement.amountGenesisTokens), "Transfer to seller failed");
         emit EscrowFulfilled(escrowId, agreement.seller);
     }
@@ -107,6 +126,8 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         require(block.timestamp > agreement.expiryTimestamp, "Escrow not expired");
         require(agreement.state == EscrowState.AwaitingProof, "Already settled");
         agreement.state = EscrowState.Defaulted;
+
+        // Refund GenesisTokens to Buyer
         require(GenesisToken.transfer(agreement.buyer, agreement.amountGenesisTokens), "Refund to buyer failed");
         emit EscrowDefaulted(escrowId, agreement.buyer);
     }

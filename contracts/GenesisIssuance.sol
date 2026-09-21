@@ -1,165 +1,282 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-interface IGenCredsVerifier {
-    function verifyStateResidency(bytes calldata zkProof, address user) external view returns (uint8 stateId, bool isValid);
+interface IZkSBTVerifier {
+    function verifyAttestationProof(
+        address user,
+        bytes32 credentialType,
+        bytes calldata zkProof
+    ) external view returns (bool);
 }
 
 /**
- * @title GenesisIssuance
- * @notice Manages per-capita dynamic GenToken allocations adjusted annually by ALFIN total asset ratios.
+ * @title GenesisEscrowArbitration
+ * @dev Multi-stage escrow arbitration with dynamic selection windows and GenesisToken arbitrator compensation.
  */
-contract GenesisIssuance is Ownable, ReentrancyGuard {
-    uint256 public constant WAD = 1e18;
-    uint256 public constant BASE_ALLOCATION = 50 * WAD; // 50 tokens baseline (2026)
-    uint256 public constant LAUNCH_YEAR = 2026;
-    uint256 public constant SECONDS_PER_YEAR = 365 days; // Standard calendar year reference
+contract GenesisEscrowArbitration is ReentrancyGuard, Ownable {
 
-    address public oracle;
-    IGenCredsVerifier public genCredsVerifier;
+    IERC20 public immutable genesisToken;
+    IZkSBTVerifier public immutable zkVerifier;
+    bytes32 public immutable arbitratorCredentialType;
 
-    // Federal annual base per year (Year => Base in WAD)
-    mapping(uint256 => uint256) public fedAnnualBase;
+    enum SelectionStage { SingleArbitrator, PanelSelection, Finalized }
 
-    // State annual base per year per state (StateID => Year => Base in WAD)
-    mapping(uint8 => mapping(uint256 => uint256)) public stateAnnualBase;
+    struct EscrowPurchase {
+        address buyer;
+        address seller;
+        uint256 itemValue;
+        uint256 arbitratorFeePool; // GenesisToken reserved for compensating arbitrators
+        uint64 creationTimestamp;
+        uint64 selectionWindowSeconds; // Timeframe to agree on single arbitrator
+        
+        SelectionStage stage;
+        
+        // Single Arbitrator Mode
+        address singleArbitrator;
+        bool buyerAgreedSingle;
+        bool sellerAgreedSingle;
 
-    struct AccountInfo {
-        uint8 stateId;            // State residency ID (1 to 50)
-        bool isVerified;          // Verified via GenCreds ZK Proof
-        uint256 netWithdrawals;   // Cumulative tokens withdrawn/spent
+        // Panel Mode (3 Arbitrators)
+        address buyerArbitrator;
+        address sellerArbitrator;
+        address chiefArbitrator;
+        bool buyerArbAgreedChief;
+        bool sellerArbAgreedChief;
+
+        // Panel Voting (2-of-3)
+        mapping(address => bool) hasVoted;
+        mapping(address => bool) voteForSeller;
+        uint8 votesForSellerCount;
+        uint8 votesForBuyerCount;
+        
+        bool resolved;
     }
 
-    mapping(address => AccountInfo) public accounts;
+    mapping(uint256 => EscrowPurchase) public escrowRegistry;
+    mapping(address => bool) public isVerifiedArbitrator;
+    uint256 public nextPurchaseId;
 
-    event FedRatioUpdated(uint256 indexed year, uint256 fedRatio, uint256 newFedBase);
-    event StateRatioUpdated(uint8 indexed stateId, uint256 indexed year, uint256 stateRatio, uint256 newStateBase);
-    event WithdrawalExecuted(address indexed user, uint256 amount, int256 remainingBalance);
-    event OracleUpdated(address indexed newOracle);
+    event ArbitratorVerified(address indexed arbitrator, bytes32 indexed credentialType);
+    event PurchaseEscrowCreated(uint256 indexed id, address indexed buyer, address indexed seller, uint256 itemValue, uint256 feePool);
+    event SingleArbitratorProposed(uint256 indexed id, address indexed proposedBy, address arbitrator);
+    event SingleArbitratorAgreed(uint256 indexed id, address indexed arbitrator);
+    event EscrowShiftedToPanel(uint256 indexed id);
+    event PanelArbitratorSelected(uint256 indexed id, address indexed arbitrator, string role);
+    event VoteCast(uint256 indexed id, address indexed voter, bool votedForSeller);
+    event EscrowSettled(uint256 indexed id, address indexed recipient, uint256 itemValue, uint256 feePaid);
 
-    modifier onlyOracle() {
-        require(msg.sender == oracle, "GenesisIssuance: Caller is not oracle");
-        _;
-    }
-
-    constructor(address _oracle, address _genCredsVerifier) Ownable(msg.sender) {
-        require(_oracle != address(0) && _genCredsVerifier != address(0), "Invalid zero address");
-        oracle = _oracle;
-        genCredsVerifier = IGenCredsVerifier(_genCredsVerifier);
-
-        // Initialize 2026 baseline allocations (50 Fed + 50 State = 100 GEN Total)
-        fedAnnualBase[LAUNCH_YEAR] = BASE_ALLOCATION;
-    }
-
-    function setOracle(address _newOracle) external onlyOwner {
-        require(_newOracle != address(0), "Invalid zero address");
-        oracle = _newOracle;
-        emit OracleUpdated(_newOracle);
+    constructor(
+        address _genesisToken, 
+        address _zkVerifier, 
+        bytes32 _arbitratorCredentialType
+    ) Ownable(msg.sender) {
+        require(_genesisToken != address(0), "Invalid token address");
+        require(_zkVerifier != address(0), "Invalid ZK Verifier address");
+        genesisToken = IERC20(_genesisToken);
+        zkVerifier = IZkSBTVerifier(_zkVerifier);
+        arbitratorCredentialType = _arbitratorCredentialType;
     }
 
     /**
-     * @notice Returns the current calendar year derived from block.timestamp
-     */
-    function getCurrentYear() public view returns (uint256) {
-        // Unix epoch timestamp for Jan 1, 2026 00:00:00 UTC = 1767225600
-        if (block.timestamp < 1767225600) return LAUNCH_YEAR;
-        return LAUNCH_YEAR + ((block.timestamp - 1767225600) / SECONDS_PER_YEAR);
+      * @notice Register as a ZK-verified arbitrator.
+      */
+    function verifyAndRegisterArbitrator(bytes calldata zkProof) external returns (bool) {
+        bool isValid = zkVerifier.verifyAttestationProof(msg.sender, arbitratorCredentialType, zkProof);
+        require(isValid, "Invalid ZK credential proof");
+
+        isVerifiedArbitrator[msg.sender] = true;
+        emit ArbitratorVerified(msg.sender, arbitratorCredentialType);
+        return true;
     }
 
     /**
-     * @notice Registers user residency directly using GenCreds ZK Proof verification
+     * @notice Initiate escrow with an item value and an explicit arbitrator compensation pool in GenesisToken.
      */
-    function registerResidentWithZK(bytes calldata zkProof) external {
-        (uint8 stateId, bool isValid) = genCredsVerifier.verifyStateResidency(zkProof, msg.sender);
-        require(isValid, "GenesisIssuance: Invalid ZK Proof");
-        require(stateId >= 1 && stateId <= 50, "GenesisIssuance: Invalid State ID");
+    function initiateSecurePurchase(
+        address _to, 
+        uint256 _itemValue,
+        uint256 _arbitratorFeePool,
+        uint64 _selectionWindowSeconds
+    ) external nonReentrant returns (uint256 purchaseId) {
+        require(_to != address(0) && _to != msg.sender, "Invalid seller address");
+        require(_itemValue > 0, "Item value must be > 0");
 
-        accounts[msg.sender].stateId = stateId;
-        accounts[msg.sender].isVerified = true;
+        purchaseId = nextPurchaseId++;
 
-        uint256 currentYear = getCurrentYear();
-        if (stateAnnualBase[stateId][LAUNCH_YEAR] == 0) {
-            stateAnnualBase[stateId][LAUNCH_YEAR] = BASE_ALLOCATION;
+        uint256 totalDeposit = _itemValue + _arbitratorFeePool;
+        require(genesisToken.transferFrom(msg.sender, address(this), totalDeposit), "Deposit transfer failed");
+
+        EscrowPurchase storage p = escrowRegistry[purchaseId];
+        p.buyer = msg.sender;
+        p.seller = _to;
+        p.itemValue = _itemValue;
+        p.arbitratorFeePool = _arbitratorFeePool;
+        p.creationTimestamp = uint64(block.timestamp);
+        p.selectionWindowSeconds = _selectionWindowSeconds;
+        p.stage = SelectionStage.SingleArbitrator;
+
+        emit PurchaseEscrowCreated(purchaseId, msg.sender, _to, _itemValue, _arbitratorFeePool);
+    }
+
+    // =========================================================================
+    // STAGE 1: SINGLE ARBITRATOR MUTUAL SELECTION
+    // =========================================================================
+
+    /**
+     * @notice Buyer or Seller proposes/accepts a single arbitrator during the window.
+     */
+    function proposeOrAgreeSingleArbitrator(uint256 _purchaseId, address _arbitrator) external {
+        EscrowPurchase storage p = escrowRegistry[_purchaseId];
+        require(p.stage == SelectionStage.SingleArbitrator, "Not in single selection stage");
+        require(block.timestamp <= p.creationTimestamp + p.selectionWindowSeconds, "Selection window expired");
+        require(isVerifiedArbitrator[_arbitrator], "Arbitrator not ZK verified");
+
+        if (msg.sender == p.buyer) {
+            p.singleArbitrator = _arbitrator;
+            p.buyerAgreedSingle = true;
+            emit SingleArbitratorProposed(_purchaseId, msg.sender, _arbitrator);
+        } else if (msg.sender == p.seller) {
+            p.singleArbitrator = _arbitrator;
+            p.sellerAgreedSingle = true;
+            emit SingleArbitratorProposed(_purchaseId, msg.sender, _arbitrator);
+        } else {
+            revert("Unauthorized caller");
+        }
+
+        // If both agree on the same arbitrator, finalize selection
+        if (p.buyerAgreedSingle && p.sellerAgreedSingle) {
+            p.stage = SelectionStage.Finalized;
+            emit SingleArbitratorAgreed(_purchaseId, p.singleArbitrator);
         }
     }
 
     /**
-     * @notice Sets Federal total asset inverse ratio multiplier on Jan 1st.
-     * @param year Target year (>= 2027)
-     * @param fedRatio Ratio in WAD: FY(t-2) Total Assets / FY(t-1) Total Assets
+     * @notice Shift escrow to Panel Selection if window expired without mutual agreement.
      */
-    function updateFedRatio(uint256 year, uint256 fedRatio) external onlyOracle {
-        require(year > LAUNCH_YEAR, "GenesisIssuance: Adjustments begin in 2027");
-        require(fedRatio > 0, "GenesisIssuance: Ratio must be > 0");
+    function transitionToPanelStage(uint256 _purchaseId) external {
+        EscrowPurchase storage p = escrowRegistry[_purchaseId];
+        require(p.stage == SelectionStage.SingleArbitrator, "Already transitioned");
+        require(block.timestamp > p.creationTimestamp + p.selectionWindowSeconds, "Window still open");
+        require(!p.buyerAgreedSingle || !p.sellerAgreedSingle, "Single arbitrator already agreed");
 
-        uint256 prevFedBase = getLatestFedBase(year - 1);
-        fedAnnualBase[year] = (prevFedBase * fedRatio) / WAD;
+        p.stage = SelectionStage.PanelSelection;
+        emit EscrowShiftedToPanel(_purchaseId);
+    }
 
-        emit FedRatioUpdated(year, fedRatio, fedAnnualBase[year]);
+    // =========================================================================
+    // STAGE 2: THREE-ARBITRATOR PANEL SELECTION
+    // =========================================================================
+
+    /**
+     * @notice Parties select their individual panel arbitrators.
+     */
+    function selectPartyArbitrator(uint256 _purchaseId, address _arbitrator) external {
+        EscrowPurchase storage p = escrowRegistry[_purchaseId];
+        require(p.stage == SelectionStage.PanelSelection, "Not in panel stage");
+        require(isVerifiedArbitrator[_arbitrator], "Arbitrator not ZK verified");
+
+        if (msg.sender == p.buyer) {
+            p.buyerArbitrator = _arbitrator;
+            emit PanelArbitratorSelected(_purchaseId, _arbitrator, "BuyerArbitrator");
+        } else if (msg.sender == p.seller) {
+            p.sellerArbitrator = _arbitrator;
+            emit PanelArbitratorSelected(_purchaseId, _arbitrator, "SellerArbitrator");
+        } else {
+            revert("Unauthorized party");
+        }
     }
 
     /**
-     * @notice Sets State total asset inverse ratio multiplier for a specific state on Jan 1st.
-     * @param stateId State ID (1 to 50)
-     * @param year Target year (>= 2027)
-     * @param stateRatio Ratio in WAD for the given state
+     * @notice Buyer's and Seller's arbitrators nominate and agree on the 3rd Chief Arbitrator.
      */
-    function updateStateRatio(uint8 stateId, uint256 year, uint256 stateRatio) external onlyOracle {
-        require(stateId >= 1 && stateId <= 50, "GenesisIssuance: Invalid State ID");
-        require(year > LAUNCH_YEAR, "GenesisIssuance: Adjustments begin in 2027");
-        require(stateRatio > 0, "GenesisIssuance: Ratio must be > 0");
+    function nominateChiefArbitrator(uint256 _purchaseId, address _chiefArbitrator) external {
+        EscrowPurchase storage p = escrowRegistry[_purchaseId];
+        require(p.stage == SelectionStage.PanelSelection, "Not in panel stage");
+        require(p.buyerArbitrator != address(0) && p.sellerArbitrator != address(0), "Party arbitrators incomplete");
+        require(isVerifiedArbitrator[_chiefArbitrator], "Chief arbitrator not ZK verified");
 
-        uint256 prevStateBase = getLatestStateBase(stateId, year - 1);
-        stateAnnualBase[stateId][year] = (prevStateBase * stateRatio) / WAD;
-
-        emit StateRatioUpdated(stateId, year, stateRatio, stateAnnualBase[stateId][year]);
-    }
-
-    function getLatestFedBase(uint256 year) public view returns (uint256) {
-        while (year >= LAUNCH_YEAR) {
-            if (fedAnnualBase[year] > 0) return fedAnnualBase[year];
-            unchecked { year--; }
+        if (msg.sender == p.buyerArbitrator) {
+            p.chiefArbitrator = _chiefArbitrator;
+            p.buyerArbAgreedChief = true;
+        } else if (msg.sender == p.sellerArbitrator) {
+            p.chiefArbitrator = _chiefArbitrator;
+            p.sellerArbAgreedChief = true;
+        } else {
+            revert("Only appointed arbitrators can nominate chief");
         }
-        return BASE_ALLOCATION;
-    }
 
-    function getLatestStateBase(uint8 stateId, uint256 year) public view returns (uint256) {
-        while (year >= LAUNCH_YEAR) {
-            if (stateAnnualBase[stateId][year] > 0) return stateAnnualBase[stateId][year];
-            unchecked { year--; }
+        if (p.buyerArbAgreedChief && p.sellerArbAgreedChief) {
+            p.stage = SelectionStage.Finalized;
+            emit PanelArbitratorSelected(_purchaseId, p.chiefArbitrator, "ChiefArbitrator");
         }
-        return BASE_ALLOCATION;
     }
 
-    function getGrossBase(address user) public view returns (uint256) {
-        AccountInfo memory acc = accounts[user];
-        if (!acc.isVerified) return 0;
+    // =========================================================================
+    // RESOLUTION & COMPENSATED VOTING
+    // =========================================================================
 
-        uint256 currentYear = getCurrentYear();
-        uint256 fedBase = getLatestFedBase(currentYear);
-        uint256 stateBase = getLatestStateBase(acc.stateId, currentYear);
+    /**
+     * @notice Cast vote to resolve dispute and receive GenesisToken compensation upon finality.
+     */
+    function castArbitrationVote(uint256 _purchaseId, bool _releaseToSeller) external nonReentrant {
+        EscrowPurchase storage p = escrowRegistry[_purchaseId];
+        require(p.stage == SelectionStage.Finalized, "Arbitration panel not fully formed");
+        require(!p.resolved, "Escrow already resolved");
+        require(!p.hasVoted[msg.sender], "Already voted");
 
-        return fedBase + stateBase;
+        bool isSingle = (p.singleArbitrator != address(0) && msg.sender == p.singleArbitrator);
+        bool isPanelMember = (msg.sender == p.buyerArbitrator || msg.sender == p.sellerArbitrator || msg.sender == p.chiefArbitrator);
+
+        require(isSingle || isPanelMember, "Unauthorized arbitrator");
+
+        p.hasVoted[msg.sender] = true;
+        p.voteForSeller[msg.sender] = _releaseToSeller;
+
+        if (_releaseToSeller) {
+            p.votesForSellerCount++;
+        } else {
+            p.votesForBuyerCount++;
+        }
+
+        emit VoteCast(_purchaseId, msg.sender, _releaseToSeller);
+
+        // Check Resolution Conditions
+        if (isSingle) {
+            _finalize(_purchaseId, _releaseToSeller ? p.seller : p.buyer, 1);
+        } else if (p.votesForSellerCount >= 2) {
+            _finalize(_purchaseId, p.seller, 3);
+        } else if (p.votesForBuyerCount >= 2) {
+            _finalize(_purchaseId, p.buyer, 3);
+        }
     }
 
-    function getAvailableBalance(address user) public view returns (int256) {
-        AccountInfo memory acc = accounts[user];
-        if (!acc.isVerified) return 0;
+    /**
+     * @dev Settles escrow and pays out GenesisToken fee pool to active arbitrators.
+     */
+    function _finalize(uint256 _purchaseId, address _recipient, uint8 _activeArbitratorCount) internal {
+        EscrowPurchase storage p = escrowRegistry[_purchaseId];
+        p.resolved = true;
 
-        uint256 grossBase = getGrossBase(user);
-        return int256(grossBase) - int256(acc.netWithdrawals);
-    }
+        uint256 itemVal = p.itemValue;
+        uint256 totalFee = p.arbitratorFeePool;
+        uint256 feePerArb = _activeArbitratorCount > 0 ? totalFee / _activeArbitratorCount : 0;
 
-    function withdraw(uint256 amount) external nonReentrant {
-        int256 available = getAvailableBalance(msg.sender);
-        require(available >= int256(amount), "GenesisIssuance: Insufficient net available balance");
+        // Pay item recipient
+        require(genesisToken.transfer(_recipient, itemVal), "Item transfer failed");
 
-        accounts[msg.sender].netWithdrawals += amount;
+        // Pay Arbitrator Rewards
+        if (_activeArbitratorCount == 1) {
+            require(genesisToken.transfer(p.singleArbitrator, totalFee), "Arbitrator fee transfer failed");
+        } else {
+            if (p.hasVoted[p.buyerArbitrator]) genesisToken.transfer(p.buyerArbitrator, feePerArb);
+            if (p.hasVoted[p.sellerArbitrator]) genesisToken.transfer(p.sellerArbitrator, feePerArb);
+            if (p.hasVoted[p.chiefArbitrator]) genesisToken.transfer(p.chiefArbitrator, feePerArb);
+        }
 
-        int256 remaining = getAvailableBalance(msg.sender);
-        emit WithdrawalExecuted(msg.sender, amount, remaining);
+        emit EscrowSettled(_purchaseId, _recipient, itemVal, totalFee);
     }
 }
