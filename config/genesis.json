@@ -18,7 +18,7 @@
   },
   "alloc": {
     "0x0000000000000000000000000000000000000100": {
-      "comment": "Pre-compiled GenesisRegistry Contract Address",
+      "comment": "Reserved legacy address; canonical registry is GenesisValidatorRegistry",
       "balance": "0x0"
     }
   },
