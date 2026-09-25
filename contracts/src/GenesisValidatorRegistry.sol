@@ -19,6 +19,7 @@ contract GenesisValidatorRegistry is Ownable {
         bool active;
         uint256 stakedAmount;
         bytes consensusPubKey;
+        string nodeType;
     }
 
     IERC20 public stakeToken;
@@ -43,17 +44,35 @@ contract GenesisValidatorRegistry is Ownable {
     }
 
     function register(bytes32 identityCommitment, bytes32 hardwareCommitment, bytes32 geography) external {
-        require(!validators[msg.sender].active, "Validator already active");
-        validators[msg.sender] = Validator(identityCommitment, hardwareCommitment, geography, uint64(block.timestamp), true, 0, "");
-        validatorList.push(msg.sender);
-        emit ValidatorRegistered(msg.sender, geography, hardwareCommitment);
+        _register(msg.sender, identityCommitment, hardwareCommitment, geography, "validator");
+    }
+
+    function register(bytes32 identityCommitment, bytes32 hardwareCommitment, bytes32 geography, string calldata nodeType) external {
+        _register(msg.sender, identityCommitment, hardwareCommitment, geography, nodeType);
+    }
+
+    function _register(address validatorAddress, bytes32 identityCommitment, bytes32 hardwareCommitment, bytes32 geography, string memory nodeType) internal {
+        require(!validators[validatorAddress].active, "Validator already active");
+        validators[validatorAddress] = Validator(
+            identityCommitment,
+            hardwareCommitment,
+            geography,
+            uint64(block.timestamp),
+            true,
+            0,
+            "",
+            nodeType
+        );
+        validatorNodeType[validatorAddress] = nodeType;
+        validatorList.push(validatorAddress);
+        emit ValidatorRegistered(validatorAddress, geography, hardwareCommitment);
     }
 
     /** @notice Legacy-compatible admin registration absorbed from GenesisRegistry. */
     function registerValidator(address validator, string calldata nodeType) external onlyOwner {
         require(validator != address(0), "Invalid validator address");
         require(!validators[validator].active, "Validator already active");
-        validators[validator] = Validator(bytes32(0), bytes32(0), bytes32(0), uint64(block.timestamp), true, 0, "");
+        validators[validator] = Validator(bytes32(0), bytes32(0), bytes32(0), uint64(block.timestamp), true, 0, "", nodeType);
         validatorNodeType[validator] = nodeType;
         validatorList.push(validator);
         emit AdministrativeValidatorRegistered(validator, nodeType);
@@ -61,11 +80,14 @@ contract GenesisValidatorRegistry is Ownable {
     }
 
     function registerValidator(bytes calldata consensusPubKey, uint256 stakeAmount) external {
-        require(address(stakeToken) != address(0), "Stake token not configured");
         require(!validators[msg.sender].active, "Validator already active");
-        require(stakeAmount >= minimumStake, "Stake below minimum threshold");
-        require(stakeToken.transferFrom(msg.sender, address(this), stakeAmount), "Stake transfer failed");
-        validators[msg.sender] = Validator(bytes32(0), bytes32(0), bytes32(0), uint64(block.timestamp), true, stakeAmount, consensusPubKey);
+        if (stakeAmount > 0) {
+            require(address(stakeToken) != address(0), "Stake token not configured");
+            if (minimumStake > 0) require(stakeAmount >= minimumStake, "Stake below minimum threshold");
+            require(stakeToken.transferFrom(msg.sender, address(this), stakeAmount), "Stake transfer failed");
+        }
+        validators[msg.sender] = Validator(bytes32(0), bytes32(0), bytes32(0), uint64(block.timestamp), true, stakeAmount, consensusPubKey, "validator");
+        validatorNodeType[msg.sender] = "validator";
         validatorList.push(msg.sender);
         emit StakedValidatorRegistered(msg.sender, stakeAmount, consensusPubKey);
     }
