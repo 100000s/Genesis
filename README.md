@@ -13,7 +13,7 @@ The Genesis app will allow anyone to
 	- Participating in app development,
 	- Operating an ATM, or
 	- Arbitrating disputes.
-	- Claim free digital or physical tokens with proof of U.S. citizenship or State residency. 
+- Claim free digital or physical tokens with proof of U.S. citizenship or State residency. 
 
 The smartphone app will be downloadable to Android or iOS from any Pi or PC validator node. Anyone with a Raspberry Pi or old laptop/desktop with a minimum 128 GB SSD can run a validator node, earning a bigger share of tokens. The app will show balance information, allow shopping, selling, getting or redeeming digital or physical Genesis Tokens, and reporting issues and bugs. It will be overlaid on a live interactive map by default, and allow functionality with AI and immersive 3D/AR/VR platforms.
 
