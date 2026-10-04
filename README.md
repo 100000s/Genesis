@@ -4,41 +4,35 @@ App, sovereign blockchain, and digital/physical tokens.
 
 ## Background
 
-The Genesis app will allow anyone to perform escrowed transactions or earn tokens by running a verifier node on his smartphone or a validator node on his laptop or Raspberry Pi. It will also allow U.S. residents and citizens to claim their free tokens.
+The Genesis app will allow anyone to 
+- Selectively reveal his soulbound identity and/or history,
+- Participate in escrowed digital transactions - regardless of residency or medium, 
+- Earn tokens by 
+	- Running a verifier node on his smartphone,
+	- Running a validator node on his laptop, desktop, or Raspberry Pi, 
+	- Participating in app development,
+	- Operating an ATM, or
+	- Arbitrating disputes.
+	- Claim free digital or physical tokens with proof of U.S. citizenship or State residency. 
 
 The smartphone app will be downloadable to Android or iOS from any Pi or PC validator node. Anyone with a Raspberry Pi or old laptop/desktop with a minimum 128 GB SSD can run a validator node, earning a bigger share of tokens. The app will show balance information, allow shopping, selling, getting or redeeming digital or physical Genesis Tokens, and reporting issues and bugs. It will be overlaid on a live interactive map by default, and allow functionality with AI and immersive 3D/AR/VR platforms.
 
-The Genesis blockchain is the framework for digital value exchange with a built-in escrow and arbitration mechanism that ensures that buyers get the product or service that they ordered, as advertised. The Genesis wallet also includes an integrated soul-bound token (SBT) mechanism that allows buyers and sellers to selectively reveal their identity or credentials (via zero-knowledge proofs), ranging from citizenship or residency to training and expertise or employment history. Any U.S. citizen or resident with a soul-bound identity can claim up to 100 Genesis tokens until January 1, 2027, without cost or obligation.
+The Genesis blockchain is the framework for digital value exchange with a built-in escrow and arbitration mechanism that ensures that buyers get the product or service that they ordered, as advertised. The Genesis wallet also includes an integrated soul-bound token (SBT) mechanism that allows buyers, sellers, and other participants to selectively reveal their identity, history, or credentials (via zero-knowledge proofs), ranging from citizenship or residency to training and expertise or employment, medical history, and property titles. Any U.S. citizen or resident with a soul-bound identity can also claim up to 100 Genesis tokens until January 1, 2027, without cost or obligation.
 
 Digital GenesisTokens will be exchangeable for other ERC-20-compatible tokens on a typical exchange, and will not incur transaction or use fees. 
 
-## Canonical protocol modules
-
-The canonical protocol is organized around ten modules:
-
-- `GenesisToken`: ERC-20 compatible digital token
-- `GenesisIssuance`: Automated airdrop/UBI limited minting of GenesisTokens derived from annual state and federal budgetary adjustments
-- `WorkerSplit`: Automated minting of GenesisTokens for Validators, Verifiers, App Team, ATM operators, and Arbitrators
-- `GenesisEscrow`: Default 2of3 escrow for purchases with automated arbitration mechanism for disputes
-- `GenesisOracle`: Automated data feeds for ALFRED budget feeds, Genesis TWAP, zero-knowledge identity/credential proof, ATM firmware
-- `GenesisIdentityRegistry`: Zero-knowledge soul-bound identity (SBTs) selective revelation for market participation
-- `GenesisValidatorRegistry`: Verification for Validation, Verification, ATM operation, Arbitration, and GIP implementation
-- `GenesisNoteRegistry`: Detailed metadata for physical Gens
-- `GenesisGovernance`: Automated GIP (Genesis Improvement Proposal) protocol
-- `AppTeamDAO`: Integrated GitHub-based Genesis tech development platform
-
 ## Physical tokens
 
-Genesis tokens can also be claimed and redeemed in physical form at an authorized printer or ATM in fixed preloaded denominations (1, 5, 20, and 100 Gens), which can be physically deposited into an account at any designated ATM or used like cash. For these physical tokens, no electronic wallet is required. No cell phone. No technical know-how. No password or passphrase to remember.
+Genesis tokens can also be claimed and redeemed in physical form at an authorized printer or ATM in fixed preloaded denominations (1, 5, 20, and 100 Gens), which can be physically deposited into an account at any designated ATM, or used like cash. For these physical tokens, no electronic wallet is required. No cell phone. No technical know-how. No password or passphrase to remember.
 
-Since these physical notes ("Gens") cannot circulate until they are loaded with digital tokens matching their face value, no digital verification is necessary. However, scanning the interactive dynamic QR code can reveal the note's entire digital history.
+Since these counterfeit-resistant physical notes ("Gens") cannot circulate until they are loaded with digital tokens matching their face value, no digital verification is necessary. But scanning the interactive dynamic QR code can reveal the note's entire digital history.
 
-Each counterfeit-resistant physical note's dynamic QR will contain real-time detailed metadata:
+Each physical note's dynamic QR will contain real-time detailed metadata:
 
 - Denomination
 - Serial number
 - Design version
-- Vault ID
+- Vault transaction ID
 - Signature from vault controller
 - Signature from issuer
 - Issue date and time
@@ -48,11 +42,11 @@ Each counterfeit-resistant physical note's dynamic QR will contain real-time det
 - Last known condition score
 - Note hash (lightweight hash of any other noteworthy information about it)
 
-Unlike Bitcoin, which apportions new coins to owners of competing "farms" packed with expensive energy-consuming mining rigs capable of performing difficult mathematical calculations (PoW, "proof of work"), or Ethereum, which apportions new coins to stakeholders based on the massiveness of their holdings (PoS, "proof of stake"), Genesis tokens are minted on demand in limited amounts for free (PoE, "proof of existence"). Genesis is a universal citizen/resident airdrop accompanied by a UBI (universal basic income) framework for residents of tax-friendly states.
+Unlike Bitcoin, which apportions new coins to owners of competing "farms" packed with expensive energy-consuming mining rigs capable of performing difficult mathematical calculations (PoW, "proof of work"), or Ethereum, which apportions new coins to stakeholders based on the massiveness of their holdings (PoS, "proof of stake"), Genesis tokens are minted on demand in limited amounts for free (PoE, "proof of existence"). Genesis utilizes a universal citizen/resident airdrop, accompanied by a UBI (universal basic income) framework for residents of tax-friendly states.
 
 ## Issuance and inflation
 
-New tokens are minted on demand by `GenesisIssuance` for eligible citizen/resident claims and by the integrated `WorkerSplit` for prior-epoch activity. Inflation is targeted below a 1% average mint rate: the `WorkerSplit` component is 0.5% of measured active transaction volume, while citizen/resident issuance follows its separate immutable budget-adjustment formula, capped at 0.5%. Both mints also have an allowance for an increased token exchange value.
+New tokens are minted on demand by `GenesisIssuance` for eligible citizen/resident claims and by the integrated `WorkerSplit` for prior-epoch activity. Inflation is targeted below a 1% average mint rate: the `WorkerSplit` component is 0.5% of measured active transaction volume, while citizen/resident issuance follows its separate immutable budget-adjustment formula, capped at 0.5% based on withdrawals from the prior day and month. Both mints also have an allowance for an increased token exchange value.
 
 `WorkerSplit` is derived from circulating digital GenesisTokens, current purchase escrow value, and cumulative circulating note value. Its pool is split as follows:
 
@@ -80,30 +74,34 @@ The available balance for all citizens will initially be 100 (50 federal-derived
 
 GIPs use six tracks: Authentication (A), Core (C), Interface (I), Knowledge (K), Oracle (O), and Process (P). Proposals are introduced as GitHub pull requests, require three acknowledged authors, pass review and peer audit, remain in a 28-day Last Call, and have a 12-week activation window. The genesis block and each subsequent protocol iteration commit a hash and URI for the GitHub GIP and BTC Ordinals text recording implemented contract changes. Ordinal publication may be paid by any party; consensus relies on the content hash, not ordinal availability.
 
+The GIP process is enabled after at least one transaction is initiated in each of the 50 states, and an ATM transaction in 10 distinct states.
+
 In the canonical governance model, GIP implementation requires more than 50% total positive signals from:
 
 - Verifiers: 15%
 - Validators: 15%
-- ATM operators: 25%
-- Note developers: 15%
-- Note maintainers: 15%
+- ATM operators: 15%
+- Note Team (developers and maintainers): 15%
 - AppTeam: 15%
+- 1% or more of ATM customers (verified unique customer votes at ATMs - offset by negative vote percent): 25%
 
 ## Canonical contract boundary
 
 The production boundary is the following named set:
 
 - `GenesisToken`: ERC-20-compatible token with explicit minter authorization.
-- `GenesisIssuance`: annual pull-based federal and state allocation ledger; this module mints claimable allocations for residents and citizens.
-- `WorkerSplit`: monthly epoch activity ledger and pull-based 40/30/20/10 distribution; this module mints claimable worker allocations.
-- `GenesisIdentityRegistry`: read-only identity and credential router for citizens, residents, workers, claimants, and arbitrators, with hashes to external zk proofs for competence and market identifiers.
-- `GenesisEscrow`: canonical purchase escrow; arbitration is a state path of an escrow, not a second purchase contract. All token transfers are 2-of-3 by default.
-- `GenesisOracle`: native data feed observation reports with source hash, timestamp, and round, for daily Genesis token price, monthly `WorkerSplit` calculation, and annual state and federal `GenesisIssuance` budgetary adjustments, as well as from external zero-knowledge identity proofs.
-- `GenesisValidatorRegistry`: zk production, geography, and hardware-attestation registry; staking is not required for eligibility.
-- `GenesisNoteRegistry`: denomination, serial, replacement, and vault-custody registry for 1, 5, 20, and 100 Gens tied to dynamic QR.
-- `GenesisGovernance`: canonical GIP metadata, voting window, and resolution status, AppTeamDAO framework.
-- `AppTeamDAO`: Live GitHub-centered Genesis ecosystem research, development, and delivery. 
+- `GenesisIssuance`: Annual pull-based allocation ledger; This module mints claimable allocations for residents and citizens, acting as an airdrop/UBI limited minter of GenesisTokens derived from annual state and federal budgetary adjustments.
+- `WorkerSplit`: Monthly epoch activity ledger and pull-based 40/30/20/10 distribution; This module mints claimable worker allocations of GenesisTokens for Validators, Verifiers, App Team, ATM operators, and Arbitrators
+- `GenesisIdentityRegistry`: A read-only identity and credential router for citizens, residents, workers, claimants, and arbitrators, with hashes to external zk proofs for competence and market identifiers, providing zero-knowledge soul-bound identity (SBTs) selective revelation for market participation
+- `GenesisEscrow`: Canonical default escrow contract for purchases, with automated arbitration mechanism for disputes; Arbitration is a state path of an escrow, not a second purchase contract. All token transfers are 2-of-3 by default.
+- `GenesisOracle`: Native data feed observation reports with source hash, timestamp, and round, for daily Genesis token price (TWAP), monthly `WorkerSplit` calculation, and annual state and federal `GenesisIssuance` budgetary adjustments via ALFRED budget feeds, as well as external zero-knowledge identity and ATM firmware proofs. 
+- `GenesisValidatorRegistry`: Verification for Validation, Verification, ATM operation, Arbitration, GIP implementation, zk production, geography, and hardware-attestation registry; While staking is not required for worker eligibility zero-knowledge proof of identity is required for production. 
+- `GenesisNoteRegistry`: Detailed metadata for physical Gens; denomination, serial, replacement, vault and transaction history for 1, 5, 20, and 100 Gens tied to dynamic QR.
+- `GenesisGovernance`: Automated GIP (Genesis Improvement Proposal) protocol; canonical GIP metadata, voting window, and resolution status, AppTeamDAO framework.
+- `AppTeamDAO`: Integrated GitHub-based Genesis tech development platform, live ongoing Genesis ecosystem research, development, and delivery. 
 
 ## Repository status
 
 The canonical version of each Genesis module is maintained in this repository at https://github.com/100000s/Genesis/tree/main/contracts/src and should be considered the authoritative definition for production use.
+
+
