@@ -10,6 +10,10 @@ interface IWorkerOracle {
     function getTwapMultiplier() external view returns (uint256);
 }
 
+interface IAppTeamDAO {
+    function notifyWorkerPool(uint256 amount) external;
+}
+
 /// @notice WorkerSplit: Epoch-based 40/30/20/10 worker distribution
 /// with dynamic TWAP-scaled minting and 0.5% base floor per component.
 ///
@@ -19,6 +23,7 @@ interface IWorkerOracle {
 /// - TWAP multiplier applied for price-growth-based supply expansion (never < 1.0)
 /// - Inactivity rolls over to next epoch
 /// - Arbitrators only claim if successful; unsuccessful arbitrators automatically rollover
+/// - App Team (30%) allocation routed to AppTeamDAO for category-based distribution
 contract WorkerSplit {
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
@@ -43,6 +48,7 @@ contract WorkerSplit {
     address public owner;
     IWorkerIssuance public immutable issuance;
     IWorkerOracle public immutable oracle;
+    IAppTeamDAO public appTeamDAO;
 
     uint64 public epoch = 1;
     uint64 public epochStart;
@@ -63,6 +69,8 @@ contract WorkerSplit {
     event ReporterUpdated(address indexed reporter, bool enabled);
     event MemberRegistered(address indexed member, uint8 indexed kind);
     event ArbitratorMarked(uint64 indexed epoch, address indexed arbitrator, bool successful);
+    event AppTeamDAONotified(uint64 indexed epoch, uint256 amount);
+    event AppTeamDAOUpdated(address indexed newDAO);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "WorkerSplit: owner only");
@@ -85,6 +93,13 @@ contract WorkerSplit {
     function setReporter(address who, bool enabled) external onlyOwner {
         reporters[who] = enabled;
         emit ReporterUpdated(who, enabled);
+    }
+
+    /// @notice Set or update the AppTeamDAO address
+    function setAppTeamDAO(address daoAddress) external onlyOwner {
+        require(daoAddress != address(0), "WorkerSplit: zero address");
+        appTeamDAO = IAppTeamDAO(daoAddress);
+        emit AppTeamDAOUpdated(daoAddress);
     }
 
     /// @notice Register a worker (idempotent)
@@ -146,6 +161,13 @@ contract WorkerSplit {
         pool[epoch][NOTE] = (scaledPool * NOTE_RATIO) / BPS;
         pool[epoch][ARBITRATOR] = (scaledPool * ARBITRATOR_RATIO) / BPS;
 
+        // Notify AppTeamDAO of its allocation (30%)
+        uint256 appAllocation = pool[epoch][APP];
+        if (address(appTeamDAO) != address(0) && appAllocation > 0) {
+            appTeamDAO.notifyWorkerPool(appAllocation);
+            emit AppTeamDAONotified(epoch, appAllocation);
+        }
+
         activity = 0;
         epoch++;
         epochStart = uint64(block.timestamp);
@@ -178,8 +200,11 @@ contract WorkerSplit {
                 // Non-successful arbitrators don't claim; their share rolls over
                 revert("WorkerSplit: not successful arbitrator");
             }
+        } else if (kind == APP) {
+            // App Team members do not claim directly; they claim via AppTeamDAO.claim(category)
+            revert("WorkerSplit: APP workers claim via AppTeamDAO");
         } else {
-            // Other workers: split equally among all registered for this kind
+            // Other workers (Validators, Verifiers, Note team): split equally among all registered for this kind
             uint256 memberCount = members[kind].length;
             require(memberCount > 0, "WorkerSplit: no members");
             amount = pool[claimEpoch][kind] / memberCount;
