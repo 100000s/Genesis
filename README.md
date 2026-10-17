@@ -55,7 +55,7 @@ New tokens are minted on demand by `GenesisIssuance` for eligible citizen/reside
   - 20: Verifiers (sporadic nodes, smartphones)
 - 30: App team
   - 10: Physical token technology R&D (secure Gen production, physical merchant integration)
-  - 10: Digital token technology R&D (Cellular interface, AX.25, Reticulum, Iridium, Kinesis, &c)
+  - 10: Digital token technology R&D (Cellular interface, AX.25, Reticulum, Iridium, Kinéis, &c)
   - 10: AI/3D/VR/AR immersive shopping integration (Genesis Mall partnerships, Virtual world portals)
 - 20: Note team
   - 10: Hardware bounty
@@ -68,13 +68,13 @@ Inactivity rolls over to the next monthly epoch, and arbitrator awards are distr
 
 ## Budget and citizenship issuance
 
-The available balance for all citizens will initially be 100 (50 federal-derived and 50 state-derived), and will be adjusted annually from official federal and state fiscal data in accordance with an official ALFRED data feed. Beginning January 1, 2027, the prior year's available balance (not factoring individual withdrawals or deposits) is multiplied by the prescribed ratio of the relevant fiscal-year receipts (total fiscal-year receipts from two prior years divided by those of the succeeding year). Citizen/resident GenesisIssuance rules are immutable and cannot be changed by a GIP.
+The available balance for all citizens will initially be 100 (50 federal-derived and 50 state-derived), and will be adjusted annually from official federal and state fiscal data in accordance with an official ALFRED data feed. Beginning January 1, 2027, the prior year's available balance (not factoring individual withdrawals or deposits) is multiplied by the prescribed ratio of the relevant fiscal-year receipts (total fiscal-year receipts from three prior years divided by those of the succeeding year). Citizen/resident GenesisIssuance rules are immutable and cannot be changed by a GIP.
 
 ## Governance and GIPs
 
 GIPs use six tracks: Authentication (A), Core (C), Interface (I), Knowledge (K), Oracle (O), and Process (P). Proposals are introduced as GitHub pull requests, require three acknowledged authors, pass review and peer audit, remain in a 28-day Last Call, and have a 12-week activation window. The genesis block and each subsequent protocol iteration commit a hash and URI for the GitHub GIP and BTC Ordinals text recording implemented contract changes. Ordinal publication may be paid by any party; consensus relies on the content hash, not ordinal availability.
 
-The GIP process is enabled after at least one transaction is initiated in each of the 50 states, and an ATM transaction in 10 distinct states.
+The GIP process is enabled after at least one transaction is initiated in 30 states, and an ATM transaction in 10 distinct states.
 
 In the canonical governance model, GIP implementation requires more than 50% total positive signals from:
 
@@ -102,6 +102,6 @@ The production boundary is the following named set:
 
 ## Repository status
 
-The canonical version of each Genesis module is maintained in this repository at https://github.com/100000s/Genesis/tree/main/contracts/src and should be considered the authoritative definition for production use.
+The canonical version of each Genesis module is maintained in this repository and should be considered the authoritative definition for production use.
 
 
