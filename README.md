@@ -89,12 +89,12 @@ In the canonical governance model, GIP implementation requires more than 50% tot
 
 The production boundary is the following named set:
  
-- [`GenesisIssuance`](./contracts/src/GenesisIssuance.sol): Annual pull-based allocation ledger; this module mints claimable allocations for residents and citizens.
-- [`WorkerSplit`](./contracts/src/WorkerSplit.sol): Monthly epoch activity ledger and pull-based 40/30/20/10 distribution; this module mints claimable worker distributions.
-- [`GenesisIdentityRegistry`](./contracts/src/GenesisIdentityRegistry.sol): A read-only identity and credential router for citizens, residents, workers, claimants, and verifiers.
-- [`GenesisEscrow`](./contracts/src/GenesisEscrow.sol): Canonical default escrow contract for purchases, with automated arbitration mechanism for disputes.
-- [`GenesisOracle`](./contracts/src/GenesisOracle.sol): Native data feed observation reports with source hash, timestamp, and round, for daily Genesis token TWAP feeds.
-- [`GenesisValidatorRegistry`](./contracts/src/GenesisValidatorRegistry.sol): Verification for Validation, Verification, ATM operation, Arbitration, and GIP implementation logic.
-- [`GenesisNoteRegistry`](./contracts/src/GenesisNoteRegistry.sol): Detailed metadata for physical Gens; denomination, serial, replacement, vault, and transaction records.
-- [`GenesisGovernance`](./contracts/src/GenesisGovernance.sol): Automated GIP (Genesis Improvement Proposal) protocol; canonical GIP metadata, voting window, and execution.
-- [`AppTeamDAO`](./contracts/src/AppTeamDAO.sol): Integrated Git-based Genesis tech development platform, live ongoing Genesis ecosystem research, and developer coordination.
+- [`GenesisIssuance`](./contracts/src/GenesisIssuance.sol): Annual pull-based allocation ledger; this module mints claimable allocations for residents and citizens, acting as an airdrop/UBI limited minter of GenesisTokens derived from annual state and federal budgetary adjustments.
+- [`WorkerSplit`](./contracts/src/WorkerSplit.sol): Monthly epoch activity ledger and pull-based 40/30/20/10 distribution; this module mints claimable worker allocations of GenesisTokens for Validators, Verifiers, App Team, ATM Operators, and Arbitrators.
+- [`GenesisIdentityRegistry`](./contracts/src/GenesisIdentityRegistry.sol): A read-only identity and credential router for citizens, residents, workers, claimants, arbitrators, and SBT participants, with hashes to external zk proofs for competence, histories, and market identifiers, providing zero-knowledge soul-bound identity (SBTs) selective revelation for market participation.
+- [`GenesisEscrow`](./contracts/src/GenesisEscrow.sol): Canonical default escrow contract for purchases, with automated arbitration mechanism for disputes. All token transfers are 2-of-3 by default.
+- [`GenesisOracle`](./contracts/src/GenesisOracle.sol): Native data feed observation reports with source hash, timestamp, and round, for daily Genesis token TWAP feeds, monthly WorkerSplit calculation, and annual state and federal GenesisIssuance budgetary adjustments via ALFRED budget feeds, as well as external zero-knowledge identity and ATM firmware proofs.
+- [`GenesisValidatorRegistry`](./contracts/src/GenesisValidatorRegistry.sol): Verification for Validation, Verification, ATM operation, Arbitration, GIP implementation, zk production, geography, and hardware attestation registry.
+- [`GenesisNoteRegistry`](./contracts/src/GenesisNoteRegistry.sol): Detailed metadata for physical Gens; denomination, serial, replacement, vault, and transaction records, tied to dynamic QR.
+- [`GenesisGovernance`](./contracts/src/GenesisGovernance.sol): Automated GIP (Genesis Improvement Proposal) protocol; canonical GIP metadata, voting window, and resolution status, and AppTeamDAO framework.
+- [`AppTeamDAO`](./contracts/src/AppTeamDAO.sol): Integrated Git-based Genesis tech development platform, live ongoing Genesis ecosystem research, developer coordination, and delivery.
