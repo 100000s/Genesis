@@ -42,6 +42,8 @@ contract GenesisIssuance {
     uint256 public constant STATE = 1;
     uint256 public constant EPOCH_DURATION = 30 days;
     uint256 public constant MIN_CLAIM_FLOOR = 0.01 * WAD;   // 0.01 tokens minimum (never zero)
+    uint256 public constant REFERRAL_THRESHOLD = 40 * WAD;
+    uint256 public constant REFERRAL_CAP = 100 * WAD;
 
     address public owner;
     IGenesisToken public immutable token;
@@ -61,6 +63,11 @@ contract GenesisIssuance {
     mapping(address => uint256) public claimedFederal;
     mapping(address => uint256) public claimedState;
     mapping(address => uint256) public workerMinted;
+
+    // Referral tracking
+    mapping(address => address) public referrerOf;
+    mapping(address => uint256) public directReferrals;
+    mapping(address => uint256) public referralRewardsEarned;
 
     // Ratio application tracking (immutable once applied per year)
     mapping(uint256 => bool) public federalRatioApplied;
@@ -87,6 +94,8 @@ contract GenesisIssuance {
     event RatioApplied(uint256 indexed year, uint8 indexed stateId, uint256 ratio);
     event DailyVolumeUpdated(uint256 indexed dayId, uint256 priorDayVolume_, uint256 currentDayVolume_, uint256 priorClaimants, uint256 currentClaimants);
     event Rolling30DayVolumeUpdated(uint256 rolling30DayVolume_, uint256 twapMultiplier);
+    event ReferrerSet(address indexed account, address indexed referrer);
+    event ReferralRewardMinted(address indexed referrer, address indexed referred, uint256 amount);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Issuance: owner only");
@@ -116,6 +125,16 @@ contract GenesisIssuance {
     function setWorkerSplit(address worker) external onlyOwner {
         require(worker != address(0), "Issuance: zero address");
         workerSplit = worker;
+    }
+
+    function setReferrer(address account, address referrer) external {
+        require(account != address(0) && referrer != address(0), "Issuance: zero address");
+        require(account != referrer, "Issuance: self-referral");
+        require(msg.sender == owner || msg.sender == account, "Issuance: invalid caller");
+        require(referrerOf[account] == address(0), "Issuance: referrer already set");
+        referrerOf[account] = referrer;
+        directReferrals[referrer] += 1;
+        emit ReferrerSet(account, referrer);
     }
 
     // ========== Time Functions ==========
@@ -303,6 +322,63 @@ contract GenesisIssuance {
         return claimed >= base ? 0 : (base - claimed);
     }
 
+    // ========== Referral Rewards ==========
+
+    function _sqrt(uint256 x) internal pure returns (uint256 y) {
+        if (x == 0) return 0;
+        uint256 z = (x + 1) / 2;
+        y = x;
+        while (z < y) {
+            y = z;
+            z = (x / z + z) / 2;
+        }
+    }
+
+    function _referralRewardFor(address referrer) internal view returns (uint256) {
+        uint256 directCount = directReferrals[referrer];
+        if (directCount == 0) return 0;
+
+        if (referralRewardsEarned[referrer] < REFERRAL_CAP) {
+            return WAD;
+        }
+
+        uint256 root = _sqrt(directCount);
+        uint256 reward = root * WAD;
+        if (reward > REFERRAL_CAP) {
+            return REFERRAL_CAP;
+        }
+        return reward;
+    }
+
+    function _processReferralRewards(address claimant) internal {
+        address currentReferrer = referrerOf[claimant];
+        address[256] memory seen;
+        uint256 depth = 0;
+
+        while (currentReferrer != address(0) && depth < seen.length) {
+            bool duplicate = false;
+            for (uint256 i = 0; i < depth; i++) {
+                if (seen[i] == currentReferrer) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) break;
+
+            seen[depth] = currentReferrer;
+            depth++;
+
+            uint256 reward = _referralRewardFor(currentReferrer);
+            if (reward > 0) {
+                referralRewardsEarned[currentReferrer] += reward;
+                token.mint(currentReferrer, reward);
+                emit ReferralRewardMinted(currentReferrer, claimant, reward);
+            }
+
+            currentReferrer = referrerOf[currentReferrer];
+        }
+    }
+
     // ========== Withdrawal (Pull-Based Minting) ==========
 
     /// @notice Withdraw federal or state tokens (pull-based, soft cap with per-claimant scaling)
@@ -368,6 +444,11 @@ contract GenesisIssuance {
         // Mint tokens
         token.mint(msg.sender, toMint);
         emit ClaimMinted(msg.sender, kind, year, toMint);
+
+        // Referral rewards for claim > 40 tokens, rewarding every referrer in the chain
+        if (toMint > REFERRAL_THRESHOLD) {
+            _processReferralRewards(msg.sender);
+        }
     }
 
     // ========== Worker Rewards ==========
