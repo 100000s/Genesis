@@ -1,0 +1,283 @@
+import { useEffect, useState } from 'react';
+import { getEthersProvider, getRuntimeContracts, CONTRACT_ORDER, type ContractKey } from './lib/contracts';
+
+const ABI_MAP: Record<ContractKey, any[]> = {
+  GenesisToken: [
+    'function balanceOf(address) view returns (uint256)',
+    'function symbol() view returns (string)',
+    'function totalSupply() view returns (uint256)',
+    'function decimals() view returns (uint8)'
+  ],
+  GenesisIssuance: [
+    'function availableFederal(address) view returns (uint256)',
+    'function availableState(address,uint8) view returns (uint256)',
+    'function currentYear() view returns (uint256)',
+    'function currentEpoch() view returns (uint256)'
+  ],
+  WorkerSplit: [
+    'function epoch() view returns (uint64)',
+    'function activity() view returns (uint256)',
+    'function participantCount(uint8) view returns (uint256)',
+    'function getMembers(uint8) view returns (address[])'
+  ],
+  GenesisGovernance: [
+    'function getBootstrapStatus() view returns (uint256,uint256,bool,bool)',
+    'function getProposal(bytes32) view returns (tuple(bytes32 id, uint8 track, address proposer, bytes32 specificationHash, bytes32 ordinalHash, uint64 createdAt, uint64 lastCallEnds, uint8 status))',
+    'function computeWeightedSignals(bytes32) view returns (bool)'
+  ],
+  AppTeamDAO: [
+    'function getCurrentCycle() view returns (uint64)',
+    'function getCategoryPool(uint8) view returns (uint256)',
+    'function getPendingReward(uint8,address) view returns (uint256)'
+  ],
+  GenesisEscrow: [
+    'function nextEscrowId() view returns (uint256)',
+    'function nextPurchaseId() view returns (uint256)',
+    'function isVerifiedArbitrator(address) view returns (bool)'
+  ],
+  GenesisIdentityRegistry: [
+    'function getJurisdiction(address) view returns (uint16)',
+    'function canClaim(address,uint8) view returns (bool)',
+    'function hasCredential(address,uint8) view returns (bool)'
+  ],
+  GenesisValidatorRegistry: [
+    'function count() view returns (uint256)',
+    'function getValidatorCount() view returns (uint256)',
+    'function getActiveValidators() view returns (address[])'
+  ],
+  GenesisOracle: [
+    'function getTwapPrice() view returns (uint256)',
+    'function getTwapMultiplier() view returns (uint256)',
+    'function getDynamicIssuanceRateBps() view returns (uint256)'
+  ],
+  GenesisNoteRegistry: [
+    'function issued(bytes32) view returns (bool)',
+    'function metadata(bytes32) view returns (uint256,bytes32,bytes32,bytes32,bytes32,uint64,bytes32,bytes32,uint64,bytes32,uint16)'
+  ]
+};
+
+const TAB_ITEMS = ['overview', 'issuance', 'governance', 'workers', 'escrow', 'notes', 'validators'] as const;
+type Tab = (typeof TAB_ITEMS)[number];
+
+function App() {
+  const [tab, setTab] = useState<Tab>('overview');
+  const [wallet, setWallet] = useState<string | null>(null);
+  const [status, setStatus] = useState<string>('Not connected');
+  const [loading, setLoading] = useState(false);
+  const [contracts, setContracts] = useState(getRuntimeContracts());
+
+  useEffect(() => {
+    const provider = getEthersProvider();
+    if (!provider) return;
+
+    provider.listAccounts().then((accounts) => {
+      if (accounts[0]) {
+        setWallet(accounts[0].address);
+        setStatus('Wallet connected');
+      }
+    });
+  }, []);
+
+  const connectWallet = async () => {
+    if (!window.ethereum) {
+      setStatus('No wallet detected. Install MetaMask or a compatible wallet.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const provider = getEthersProvider();
+      if (!provider) throw new Error('Wallet provider unavailable');
+      const accounts = await provider.send('eth_requestAccounts', []);
+      const [account] = accounts;
+      setWallet(account);
+      setStatus('Wallet connected');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Wallet connection failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const metrics = ['overview', 'issuance', 'governance', 'workers', 'escrow', 'notes', 'validators'];
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <div className="eyebrow">Sovereign blockchain</div>
+          <h1>Genesis</h1>
+        </div>
+        <div className="topbar-actions">
+          <span className="status-pill">{status}</span>
+          <button className="primary" onClick={connectWallet} disabled={loading}>
+            {loading ? 'Connecting...' : wallet ? wallet.slice(0, 6) + '...' + wallet.slice(-4) : 'Connect wallet'}
+          </button>
+        </div>
+      </header>
+
+      <nav className="nav">
+        {metrics.map((item) => (
+          <button
+            key={item}
+            className={item === tab ? 'nav-item active' : 'nav-item'}
+            onClick={() => setTab(item as Tab)}
+          >
+            {item}
+          </button>
+        ))}
+      </nav>
+
+      <main className="content">
+        {tab === 'overview' && <OverviewSection wallet={wallet} contracts={contracts} />}
+        {tab === 'issuance' && <IssuanceSection wallet={wallet} contracts={contracts} />}
+        {tab === 'governance' && <GovernanceSection wallet={wallet} contracts={contracts} />}
+        {tab === 'workers' && <WorkersSection wallet={wallet} contracts={contracts} />}
+        {tab === 'escrow' && <EscrowSection wallet={wallet} contracts={contracts} />}
+        {tab === 'notes' && <NotesSection wallet={wallet} contracts={contracts} />}
+        {tab === 'validators' && <ValidatorsSection wallet={wallet} contracts={contracts} />}
+      </main>
+    </div>
+  );
+}
+
+function OverviewSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  return (
+    <section>
+      <div className="hero-card">
+        <div>
+          <div className="eyebrow">Genesis Ecosystem</div>
+          <h2>App, token, sovereign blockchain, and digital identity</h2>
+        </div>
+        <p>
+          Access citizenship issuance, governance, worker rewards, escrow, validator workflows, note metadata,
+          and app team allocations from a single mobile-friendly interface.
+        </p>
+      </div>
+
+      <div className="grid cards three-up">
+        {CONTRACT_ORDER.map((key) => (
+          <div className="card" key={key}>
+            <h3>{contracts[key].name}</h3>
+            <p>{contracts[key].description}</p>
+            <code>{contracts[key].address}</code>
+            <small>{contracts[key].methods.slice(0, 2).join(' • ')}</small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function IssuanceSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  const [msg, setMsg] = useState('Ready to claim');
+  const handleClaim = async () => {
+    if (!wallet) {
+      setMsg('Connect a wallet first.');
+      return;
+    }
+
+    try {
+      const provider = getEthersProvider();
+      if (!provider) throw new Error('No provider');
+      const signer = await provider.getSigner();
+      const contract = new (await import('ethers')).Contract(
+        contracts.GenesisIssuance.address,
+        ABI_MAP.GenesisIssuance,
+        signer
+      );
+      const tx = await contract.withdraw(0, 0, 1n * 10n ** 18n);
+      setMsg(`Claim tx submitted: ${tx.hash}`);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Claim failed');
+    }
+  };
+
+  return (
+    <section className="panel">
+      <h2>Issuance</h2>
+      <p>Federal/state claims, dynamic availability windows, and referral rewards.</p>
+      <button className="primary" onClick={handleClaim}>Simulate claim</button>
+      <p className="status-text">{msg}</p>
+      <ul>
+        <li>availableFederal(address)</li>
+        <li>availableState(address, uint8)</li>
+        <li>withdraw(uint8 kind, uint8 stateId, uint256 amount)</li>
+      </ul>
+    </section>
+  );
+}
+
+function GovernanceSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  return (
+    <section className="panel">
+      <h2>Governance</h2>
+      <p>GIP lifecycle, weighted voting, bootstrap gate checks, and delegated governance flows.</p>
+      <ul>
+        <li>propose(bytes32, Track, bytes32, bytes32)</li>
+        <li>vote(bytes32, bool, uint256)</li>
+        <li>resolve(bytes32)</li>
+        <li>activate(bytes32)</li>
+      </ul>
+    </section>
+  );
+}
+
+function WorkersSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  return (
+    <section className="panel">
+      <h2>Workers</h2>
+      <p>Validator, verifier, app team, note team, and arbitrator reward pools.</p>
+      <ul>
+        <li>recordActivity(uint256)</li>
+        <li>recordNativeVolume(uint256)</li>
+        <li>finalizeEpoch()</li>
+        <li>claim(uint64, uint8)</li>
+      </ul>
+    </section>
+  );
+}
+
+function EscrowSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  return (
+    <section className="panel">
+      <h2>Escrow & arbitration</h2>
+      <p>Purchase escrow, proof-gated releases, and arbitrator-driven dispute flows.</p>
+      <ul>
+        <li>createEscrow(address seller, uint256 amount, bytes32 credentialType, uint64 duration)</li>
+        <li>fulfillEscrow(uint256, bytes proof)</li>
+        <li>triggerDefault(uint256)</li>
+      </ul>
+    </section>
+  );
+}
+
+function NotesSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  return (
+    <section className="panel">
+      <h2>Physical note registry</h2>
+      <p>Serial metadata, denomination, vault data, ATM scans, and replacement tracking.</p>
+      <ul>
+        <li>issue(bytes32 serial, uint256 denomination, bytes32 vaultId, Metadata)</li>
+        <li>recordScan(bytes32 serial, bytes32 atmSignature, uint64 scanAt, bytes32 location, uint16 conditionScore)</li>
+        <li>replace(bytes32 oldSerial, bytes32 newSerial)</li>
+      </ul>
+    </section>
+  );
+}
+
+function ValidatorsSection({ wallet, contracts }: { wallet: string | null; contracts: ReturnType<typeof getRuntimeContracts> }) {
+  return (
+    <section className="panel">
+      <h2>Validators</h2>
+      <p>Node registration, staking, hardware commitments, and validator registry status.</p>
+      <ul>
+        <li>register(bytes32 identityCommitment, bytes32 hardwareCommitment, bytes32 geography)</li>
+        <li>registerValidator(address validator, string nodeType)</li>
+        <li>setActive(address validator, bool active)</li>
+      </ul>
+    </section>
+  );
+}
+
+export default App;

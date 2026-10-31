@@ -7,7 +7,10 @@
     "test": "test"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
+    "web:preview": "vite preview --config web/vite.config.ts --host 0.0.0.0"
   },
   "repository": {
     "type": "git",
@@ -25,11 +28,19 @@
     "@nomicfoundation/hardhat-ethers": "^4.0.15",
     "@nomicfoundation/hardhat-toolbox": "^7.0.0",
     "@types/dotenv": "^6.1.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
     "hardhat": "^3.13.0",
     "ts-node": "^10.9.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^5.4.10",
+    "vite-plugin-pwa": "^0.21.0"
   },
   "dependencies": {
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "ethers": "^6.16.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }
