@@ -9,10 +9,11 @@ interface IZkSBTVerifier {
     function verifyAttestationProof(address user, bytes32 credentialType, bytes calldata zkProof) external view returns (bool);
 }
 
-/**
- * @title GenesisEscrow
- * @notice Canonical proof-gated escrow with integrated single-arbitrator and 2-of-3 panel arbitration.
- */
+interface IWorkerSplitArbitration {
+    function epoch() external view returns (uint64);
+    function markSuccessfulArbitrator(uint64 completionEpoch, address arbitrator) external;
+}
+
 contract GenesisEscrow is ReentrancyGuard, Ownable {
     enum EscrowState { AwaitingProof, Active, Completed, Defaulted }
     enum SelectionStage { SingleArbitrator, PanelSelection, Finalized }
@@ -51,6 +52,7 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
 
     IERC20 public immutable GenesisToken;
     IZkSBTVerifier public zkVerifier;
+    IWorkerSplitArbitration public workerSplit;
     bytes32 public arbitratorCredentialType;
     uint256 public nextEscrowId;
     uint256 public nextPurchaseId;
@@ -69,11 +71,18 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
     event PanelArbitratorSelected(uint256 indexed id, address indexed arbitrator, string role);
     event VoteCast(uint256 indexed id, address indexed voter, bool votedForSeller);
     event EscrowSettled(uint256 indexed id, address indexed recipient, uint256 itemValue, uint256 feePaid);
+    event WorkerSplitUpdated(address indexed workerSplit);
 
     constructor(address token, address verifier) Ownable(msg.sender) {
         require(token != address(0) && verifier != address(0), "GenesisEscrow: zero address");
         GenesisToken = IERC20(token);
         zkVerifier = IZkSBTVerifier(verifier);
+    }
+
+    function setWorkerSplit(address workerSplitAddress) external onlyOwner {
+        require(workerSplitAddress != address(0), "GenesisEscrow: zero address");
+        workerSplit = IWorkerSplitArbitration(workerSplitAddress);
+        emit WorkerSplitUpdated(workerSplitAddress);
     }
 
     function setArbitratorCredentialType(bytes32 credentialType) external onlyOwner {
@@ -198,23 +207,31 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
         else p.votesForBuyerCount++;
         emit VoteCast(id, msg.sender, releaseToSeller);
         if (single) _finalizeSingle(id, releaseToSeller ? p.seller : p.buyer);
-        else if (p.votesForSellerCount >= 2) _finalizePanel(id, p.seller);
-        else if (p.votesForBuyerCount >= 2) _finalizePanel(id, p.buyer);
+        else if (p.votesForSellerCount >= 2) _finalizePanel(id, p.seller, true);
+        else if (p.votesForBuyerCount >= 2) _finalizePanel(id, p.buyer, false);
+    }
+
+    function _recordSuccessfulArbitrator(address arbitrator) internal {
+        if (address(workerSplit) != address(0)) {
+            workerSplit.markSuccessfulArbitrator(workerSplit.epoch(), arbitrator);
+        }
     }
 
     function _finalizeSingle(uint256 id, address recipient) internal {
         ArbitrationCase storage p = arbitrationCases[id];
         p.resolved = true;
+        _recordSuccessfulArbitrator(p.singleArbitrator);
         require(GenesisToken.transfer(recipient, p.itemValue), "GenesisEscrow: item transfer failed");
         require(GenesisToken.transfer(p.singleArbitrator, p.arbitratorFeePool), "GenesisEscrow: fee transfer failed");
         emit EscrowSettled(id, recipient, p.itemValue, p.arbitratorFeePool);
     }
 
-    function _finalizePanel(uint256 id, address recipient) internal {
+    function _finalizePanel(uint256 id, address recipient, bool majoritySeller) internal {
         ArbitrationCase storage p = arbitrationCases[id];
         p.resolved = true;
+        _recordMajorityVoters(p, majoritySeller);
         require(GenesisToken.transfer(recipient, p.itemValue), "GenesisEscrow: item transfer failed");
-        uint256 totalVoters = 0;
+        uint256 totalVoters;
         if (p.hasVoted[p.buyerArbitrator]) totalVoters++;
         if (p.hasVoted[p.sellerArbitrator]) totalVoters++;
         if (p.hasVoted[p.chiefArbitrator]) totalVoters++;
@@ -230,9 +247,14 @@ contract GenesisEscrow is ReentrancyGuard, Ownable {
             distributed += fee;
         }
         if (p.hasVoted[p.chiefArbitrator]) {
-            uint256 chiefFee = p.arbitratorFeePool - distributed;
-            require(GenesisToken.transfer(p.chiefArbitrator, chiefFee), "GenesisEscrow: fee transfer failed");
+            require(GenesisToken.transfer(p.chiefArbitrator, p.arbitratorFeePool - distributed), "GenesisEscrow: fee transfer failed");
         }
         emit EscrowSettled(id, recipient, p.itemValue, p.arbitratorFeePool);
+    }
+
+    function _recordMajorityVoters(ArbitrationCase storage p, bool majoritySeller) internal {
+        if (p.hasVoted[p.buyerArbitrator] && p.voteForSeller[p.buyerArbitrator] == majoritySeller) _recordSuccessfulArbitrator(p.buyerArbitrator);
+        if (p.hasVoted[p.sellerArbitrator] && p.voteForSeller[p.sellerArbitrator] == majoritySeller) _recordSuccessfulArbitrator(p.sellerArbitrator);
+        if (p.hasVoted[p.chiefArbitrator] && p.voteForSeller[p.chiefArbitrator] == majoritySeller) _recordSuccessfulArbitrator(p.chiefArbitrator);
     }
 }
