@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 interface IWorkerIssuance {
-    function mintWorkerReward(address, uint256) external;
+    function mintWorkerReward(address recipient, uint256 amount) external;
 }
 
 interface IWorkerOracle {
@@ -10,14 +10,16 @@ interface IWorkerOracle {
     function getTwapMultiplier() external view returns (uint256);
 }
 
-interface IAppTeamDAO {
-    function notifyWorkerPool(uint256 amount) external;
-    function notifyArbitrationFallback(uint256 amount) external;
+interface IAppRewardSink {
+    function notifyWorkerPool(uint64 fundingEpoch, uint256 amount) external;
 }
 
-/// @notice Epoch-based worker allocation with contribution-weighted rewards and
-/// category-specific rollover. Contribution and arbitration reports must come
-/// from explicitly authorized, independent reporting integrations.
+interface INoteRewardSink {
+    function notifyWorkerPool(uint64 fundingEpoch, uint256 amount) external;
+}
+
+/// @notice Monthly allocation ledger. Earned epoch pools are permanent liabilities:
+/// claims remain available indefinitely and are never recycled after allocation.
 contract WorkerSplit {
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
@@ -39,9 +41,9 @@ contract WorkerSplit {
     address public owner;
     IWorkerIssuance public immutable issuance;
     IWorkerOracle public immutable oracle;
-    IAppTeamDAO public appTeamDAO;
+    IAppRewardSink public appRewardSink;
+    INoteRewardSink public noteRewardSink;
     address public chainMaintainerRecipient;
-    address public noteTeamRecipient;
 
     uint64 public epoch = 1;
     uint64 public epochStart;
@@ -51,27 +53,28 @@ contract WorkerSplit {
     mapping(address => bool) public registrationAgents;
     mapping(address => bool) public arbitrationSources;
     mapping(uint8 => address[]) private members;
-    mapping(address => uint8) public memberKind; // 0=unregistered; category + 1 otherwise
+    mapping(address => uint8) public memberKind; // 0=unregistered; kind+1 otherwise
     mapping(uint64 => mapping(uint8 => uint256)) public pool;
-    mapping(uint64 => mapping(uint8 => uint256)) public categoryRollover;
+    mapping(uint8 => uint256) public categoryRollover;
     mapping(uint64 => mapping(uint8 => mapping(address => uint256))) public contributionWeight;
     mapping(uint64 => mapping(uint8 => uint256)) public totalContributionWeight;
     mapping(uint64 => mapping(uint8 => mapping(address => bool))) public claimed;
     mapping(uint64 => mapping(uint8 => uint256)) public claimedAmount;
     mapping(uint64 => mapping(address => bool)) public successfulArbitrator;
     mapping(uint64 => uint256) public successfulArbitratorCount;
-    mapping(uint64 => bool) public epochSettled;
+    mapping(uint64 => mapping(bytes32 => mapping(address => bool))) public arbitrationOutcomeRecorded;
+    mapping(uint64 => uint256) public arbitratorFallbackAmount;
 
-    event ActivityReported(address indexed reporter, uint256 amount);
-    event EpochFinalized(uint64 indexed epoch, uint256 workerPool, uint256 dynamicRateBps, uint256 twapMul);
-    event RewardClaimed(uint64 indexed epoch, uint8 indexed kind, address indexed member, uint256 amount);
     event ReporterUpdated(address indexed reporter, bool enabled);
     event RegistrationAgentUpdated(address indexed agent, bool enabled);
     event ArbitrationSourceUpdated(address indexed source, bool enabled);
     event MemberRegistered(address indexed member, uint8 indexed kind);
+    event ActivityReported(address indexed reporter, uint256 amount);
     event ContributionRecorded(uint64 indexed epoch, uint8 indexed kind, address indexed member, uint256 weight);
-    event ArbitratorMarked(uint64 indexed epoch, address indexed arbitrator);
+    event ArbitratorMarked(uint64 indexed epoch, bytes32 indexed outcomeId, address indexed arbitrator);
     event ArbitrationFallback(uint64 indexed epoch, uint256 amount);
+    event EpochFinalized(uint64 indexed epoch, uint256 workerPool, uint256 dynamicRateBps, uint256 twapMul);
+    event RewardClaimed(uint64 indexed epoch, uint8 indexed kind, address indexed member, uint256 amount);
     event CategoryRolledOver(uint64 indexed epoch, uint8 indexed kind, uint256 amount);
 
     modifier onlyOwner() {
@@ -80,7 +83,7 @@ contract WorkerSplit {
     }
 
     modifier onlyReporter() {
-        require(reporters[msg.sender] || msg.sender == owner, "WorkerSplit: reporter");
+        require(reporters[msg.sender] || msg.sender == owner, "WorkerSplit: reporter only");
         _;
     }
 
@@ -110,18 +113,13 @@ contract WorkerSplit {
         emit ArbitrationSourceUpdated(who, enabled);
     }
 
-    function setAppTeamDAO(address daoAddress) external onlyOwner {
-        require(daoAddress != address(0), "WorkerSplit: zero address");
-        appTeamDAO = IAppTeamDAO(daoAddress);
+    function setRewardSinks(address appSink, address noteSink, address chainMaintainer) external onlyOwner {
+        require(appSink != address(0) && noteSink != address(0) && chainMaintainer != address(0), "WorkerSplit: zero address");
+        appRewardSink = IAppRewardSink(appSink);
+        noteRewardSink = INoteRewardSink(noteSink);
+        chainMaintainerRecipient = chainMaintainer;
     }
 
-    function setFallbackRecipients(address chainMaintainers, address noteTeam) external onlyOwner {
-        require(chainMaintainers != address(0) && noteTeam != address(0), "WorkerSplit: zero address");
-        chainMaintainerRecipient = chainMaintainers;
-        noteTeamRecipient = noteTeam;
-    }
-
-    /// @dev Registration is gated by a trusted registry/agent, not self-selected by workers.
     function registerWorker(address member, uint8 kind) external {
         require(msg.sender == owner || registrationAgents[msg.sender], "WorkerSplit: registration agent only");
         require(member != address(0) && kind <= ARBITRATOR, "WorkerSplit: invalid registration");
@@ -132,81 +130,120 @@ contract WorkerSplit {
     }
 
     function recordActivity(uint256 amount) external onlyReporter {
+        require(amount > 0, "WorkerSplit: zero activity");
         activity += amount;
         emit ActivityReported(msg.sender, amount);
     }
 
-    /// @notice Record independently verified contribution in the active epoch.
+    /// @notice Per-epoch, class-specific service weight from an authorized measurement system.
     function recordContribution(uint64 contributionEpoch, uint8 kind, address member, uint256 weight) external onlyReporter {
-        require(contributionEpoch == epoch, "WorkerSplit: inactive epoch");
-        require(kind <= ARBITRATOR && memberKind[member] == kind + 1, "WorkerSplit: wrong worker category");
-        require(weight > 0, "WorkerSplit: zero contribution");
+        require(contributionEpoch == epoch && kind <= VERIFIER, "WorkerSplit: inactive epoch or kind");
+        require(memberKind[member] == kind + 1 && weight > 0, "WorkerSplit: invalid contribution");
         contributionWeight[contributionEpoch][kind][member] += weight;
         totalContributionWeight[contributionEpoch][kind] += weight;
         emit ContributionRecorded(contributionEpoch, kind, member, weight);
     }
 
-    /// @notice Called only by the configured escrow/arbitration integration.
-    /// Completion is credited to the epoch in which the outcome becomes final.
-    function markSuccessfulArbitrator(uint64 completionEpoch, address arbitrator) external {
+    /// @notice Record each final-case participant once. Escrow must pass a unique case/outcome ID.
+    function markSuccessfulArbitrator(uint64 completionEpoch, bytes32 outcomeId, address arbitrator) external {
         require(arbitrationSources[msg.sender], "WorkerSplit: arbitration source only");
-        require(completionEpoch == epoch && arbitrator != address(0), "WorkerSplit: inactive epoch");
-        require(!successfulArbitrator[completionEpoch][arbitrator], "WorkerSplit: already recorded");
-        successfulArbitrator[completionEpoch][arbitrator] = true;
-        if (memberKind[arbitrator] == ARBITRATOR + 1) successfulArbitratorCount[completionEpoch]++;
-        emit ArbitratorMarked(completionEpoch, arbitrator);
+        require(completionEpoch == epoch && outcomeId != bytes32(0), "WorkerSplit: inactive epoch or empty outcome");
+        require(memberKind[arbitrator] == ARBITRATOR + 1, "WorkerSplit: arbitrator not registered");
+        require(!arbitrationOutcomeRecorded[completionEpoch][outcomeId][arbitrator], "WorkerSplit: outcome already recorded");
+        arbitrationOutcomeRecorded[completionEpoch][outcomeId][arbitrator] = true;
+        if (!successfulArbitrator[completionEpoch][arbitrator]) {
+            successfulArbitrator[completionEpoch][arbitrator] = true;
+            successfulArbitratorCount[completionEpoch]++;
+        }
+        emit ArbitratorMarked(completionEpoch, outcomeId, arbitrator);
     }
 
     function finalizeEpoch() external {
         require(block.timestamp >= epochStart + EPOCH_DURATION, "WorkerSplit: epoch active");
         uint64 finalizedEpoch = epoch;
-
         uint256 base = (activity * BASE_FLOOR_BPS) / BPS;
         uint256 dynamicBps = oracle.getDynamicIssuanceRateBps();
         uint256 scaleFactor = (dynamicBps * WAD) / (2 * BASE_FLOOR_BPS);
-        uint256 scaledPool = ((base * scaleFactor) / WAD * oracle.getTwapMultiplier()) / WAD;
+        uint256 twapMul = oracle.getTwapMultiplier();
+        uint256 scaledPool = (((base * scaleFactor) / WAD) * twapMul) / WAD;
 
-        pool[finalizedEpoch][VALIDATOR] = (scaledPool * VALIDATOR_RATIO) / BPS + categoryRollover[finalizedEpoch][VALIDATOR];
-        pool[finalizedEpoch][VERIFIER] = (scaledPool * VERIFIER_RATIO) / BPS + categoryRollover[finalizedEpoch][VERIFIER];
-        pool[finalizedEpoch][APP] = (scaledPool * APP_RATIO) / BPS;
-        pool[finalizedEpoch][NOTE] = (scaledPool * NOTE_RATIO) / BPS + categoryRollover[finalizedEpoch][NOTE];
-        pool[finalizedEpoch][ARBITRATOR] = (scaledPool * ARBITRATOR_RATIO) / BPS + categoryRollover[finalizedEpoch][ARBITRATOR];
+        _allocateWeighted(finalizedEpoch, VALIDATOR, (scaledPool * VALIDATOR_RATIO) / BPS);
+        _allocateWeighted(finalizedEpoch, VERIFIER, (scaledPool * VERIFIER_RATIO) / BPS);
 
-        categoryRollover[finalizedEpoch][VALIDATOR] = 0;
-        categoryRollover[finalizedEpoch][VERIFIER] = 0;
-        categoryRollover[finalizedEpoch][NOTE] = 0;
-        categoryRollover[finalizedEpoch][ARBITRATOR] = 0;
+        uint256 appAmount = (scaledPool * APP_RATIO) / BPS;
+        uint256 noteAmount = (scaledPool * NOTE_RATIO) / BPS;
+        require(address(appRewardSink) != address(0) && address(noteRewardSink) != address(0), "WorkerSplit: sinks unset");
+        if (appAmount > 0) {
+            issuance.mintWorkerReward(address(appRewardSink), appAmount);
+            appRewardSink.notifyWorkerPool(finalizedEpoch, appAmount);
+        }
+        if (noteAmount > 0) {
+            issuance.mintWorkerReward(address(noteRewardSink), noteAmount);
+            noteRewardSink.notifyWorkerPool(finalizedEpoch, noteAmount);
+        }
 
-        uint256 appAllocation = pool[finalizedEpoch][APP];
-        if (appAllocation > 0) {
-            require(address(appTeamDAO) != address(0), "WorkerSplit: app DAO unset");
-            // Mint actual tokens before notifying the DAO, so its accounting is backed.
-            issuance.mintWorkerReward(address(appTeamDAO), appAllocation);
-            appTeamDAO.notifyWorkerPool(appAllocation);
+        uint256 arbitratorAmount = (scaledPool * ARBITRATOR_RATIO) / BPS;
+        uint256 arbitratorCarry = categoryRollover[ARBITRATOR];
+        categoryRollover[ARBITRATOR] = 0;
+        arbitratorAmount += arbitratorCarry;
+        if (successfulArbitratorCount[finalizedEpoch] > 0) {
+            pool[finalizedEpoch][ARBITRATOR] = arbitratorAmount;
+        } else if (arbitratorAmount > 0) {
+            _applyArbitratorFallback(finalizedEpoch, arbitratorAmount);
         }
 
         activity = 0;
         epoch = finalizedEpoch + 1;
         epochStart = uint64(block.timestamp);
-        emit EpochFinalized(finalizedEpoch, scaledPool, dynamicBps, oracle.getTwapMultiplier());
+        emit EpochFinalized(finalizedEpoch, scaledPool, dynamicBps, twapMul);
     }
 
+    function _allocateWeighted(uint64 finalizedEpoch, uint8 kind, uint256 freshAmount) internal {
+        uint256 amount = freshAmount + categoryRollover[kind];
+        categoryRollover[kind] = 0;
+        if (amount == 0) return;
+        if (totalContributionWeight[finalizedEpoch][kind] == 0) {
+            categoryRollover[kind] = amount;
+            emit CategoryRolledOver(finalizedEpoch, kind, amount);
+        } else {
+            pool[finalizedEpoch][kind] = amount;
+        }
+    }
+
+    function _applyArbitratorFallback(uint64 finalizedEpoch, uint256 amount) internal {
+        require(chainMaintainerRecipient != address(0) && address(appRewardSink) != address(0) && address(noteRewardSink) != address(0), "WorkerSplit: fallback sinks unset");
+        uint256 chainShare = (amount * 4_000) / BPS;
+        uint256 appShare = (amount * 3_000) / BPS;
+        uint256 noteShare = amount - chainShare - appShare;
+        if (chainShare > 0) issuance.mintWorkerReward(chainMaintainerRecipient, chainShare);
+        if (appShare > 0) {
+            issuance.mintWorkerReward(address(appRewardSink), appShare);
+            appRewardSink.notifyWorkerPool(finalizedEpoch, appShare);
+        }
+        if (noteShare > 0) {
+            issuance.mintWorkerReward(address(noteRewardSink), noteShare);
+            noteRewardSink.notifyWorkerPool(finalizedEpoch, noteShare);
+        }
+        arbitratorFallbackAmount[finalizedEpoch] = amount;
+        emit ArbitrationFallback(finalizedEpoch, amount);
+    }
+
+    /// @notice Claims remain open indefinitely. Allocated amounts are never recycled.
     function claim(uint64 claimEpoch, uint8 kind) external {
         require(claimEpoch < epoch && kind <= ARBITRATOR, "WorkerSplit: invalid epoch or kind");
+        require(kind != APP && kind != NOTE, "WorkerSplit: use dedicated distributor");
         require(memberKind[msg.sender] == kind + 1, "WorkerSplit: wrong worker category");
         require(!claimed[claimEpoch][kind][msg.sender], "WorkerSplit: already claimed");
-
         uint256 amount;
-        if (kind == APP) revert("WorkerSplit: APP workers claim via app distributor");
         if (kind == ARBITRATOR) {
             uint256 count = successfulArbitratorCount[claimEpoch];
             require(successfulArbitrator[claimEpoch][msg.sender] && count > 0, "WorkerSplit: not successful arbitrator");
             amount = pool[claimEpoch][kind] / count;
         } else {
-            uint256 totalWeight = totalContributionWeight[claimEpoch][kind];
-            uint256 memberWeight = contributionWeight[claimEpoch][kind][msg.sender];
-            require(totalWeight > 0 && memberWeight > 0, "WorkerSplit: no verified contribution");
-            amount = (pool[claimEpoch][kind] * memberWeight) / totalWeight;
+            uint256 total = totalContributionWeight[claimEpoch][kind];
+            uint256 weight = contributionWeight[claimEpoch][kind][msg.sender];
+            require(total > 0 && weight > 0 && pool[claimEpoch][kind] > 0, "WorkerSplit: no allocated contribution reward");
+            amount = (pool[claimEpoch][kind] * weight) / total;
         }
         require(amount > 0, "WorkerSplit: zero amount");
         claimed[claimEpoch][kind][msg.sender] = true;
@@ -215,37 +252,6 @@ contract WorkerSplit {
         emit RewardClaimed(claimEpoch, kind, msg.sender, amount);
     }
 
-    /// @notice Close a completed epoch after the following epoch has ended. Unclaimed
-    /// funds roll into the same category, except an empty arbitrator pool follows 40/30/30.
-    function settleUnclaimed(uint64 settledEpoch, uint8 kind) external {
-        require(settledEpoch + 1 < epoch && kind <= ARBITRATOR && kind != APP, "WorkerSplit: not settleable");
-        require(!epochSettled[settledEpoch], "WorkerSplit: already settled");
-        epochSettled[settledEpoch] = true;
-        uint256 unclaimed = pool[settledEpoch][kind] - claimedAmount[settledEpoch][kind];
-        if (unclaimed == 0) return;
-
-        if (kind == ARBITRATOR && successfulArbitratorCount[settledEpoch] == 0) {
-            require(chainMaintainerRecipient != address(0) && noteTeamRecipient != address(0), "WorkerSplit: fallback unset");
-            require(address(appTeamDAO) != address(0), "WorkerSplit: app DAO unset");
-            uint256 chainShare = (unclaimed * 4_000) / BPS;
-            uint256 appShare = (unclaimed * 3_000) / BPS;
-            uint256 noteShare = unclaimed - chainShare - appShare;
-            issuance.mintWorkerReward(chainMaintainerRecipient, chainShare);
-            issuance.mintWorkerReward(address(appTeamDAO), appShare);
-            appTeamDAO.notifyWorkerPool(appShare);
-            issuance.mintWorkerReward(noteTeamRecipient, noteShare);
-            emit ArbitrationFallback(settledEpoch, unclaimed);
-        } else {
-            categoryRollover[epoch][kind] += unclaimed;
-            emit CategoryRolledOver(settledEpoch, kind, unclaimed);
-        }
-    }
-
-    function participantCount(uint8 kind) external view returns (uint256) {
-        return members[kind].length;
-    }
-
-    function getMembers(uint8 kind) external view returns (address[] memory) {
-        return members[kind];
-    }
+    function participantCount(uint8 kind) external view returns (uint256) { return members[kind].length; }
+    function getMembers(uint8 kind) external view returns (address[] memory) { return members[kind]; }
 }

@@ -6,13 +6,14 @@ interface IRewardToken {
     function transfer(address to, uint256 amount) external returns (bool);
 }
 
-/// @notice Proof-of-use-gated AppTeam reward accounting. Deploy as the AppTeam
-/// reward distributor and configure its address in WorkerSplit. Use attestations
-/// and contribution reports must be supplied by separately authorized services.
+interface ISharedRewardEpoch {
+    function epoch() external view returns (uint64);
+}
+
+/// @notice App technology rewards funded by explicit WorkerSplit epoch. A verified
+/// user operation gates release; distinct verified contribution weights allocate it.
 contract AppTeamRewardDistributor {
     uint256 public constant BPS = 10_000;
-    uint64 public constant EPOCH_DURATION = 30 days;
-
     uint8 public constant PHYSICAL_TOKEN = 0;
     uint8 public constant CELLULAR = 1;
     uint8 public constant LEGACY_HARDWARE = 2;
@@ -23,137 +24,109 @@ contract AppTeamRewardDistributor {
     uint8 public constant DECENTRALAND = 7;
     uint8 public constant TECHNOLOGY_COUNT = 8;
 
-    // Shares of the AppTeam pool: one third physical, one third digital, one third immersive.
-    // Digital's 40/30/20/10 split corresponds to 4/3/2/1 percent of the overall WorkerSplit pool.
+    // Shares of the 30% App allocation: physical 1/3, digital 1/3, immersive 1/3.
+    // Digital subcategories are 4/3/2/1 percent of the overall WorkerSplit pool.
     uint16[8] private technologyBps = [uint16(3333), 1333, 1000, 667, 333, 1112, 1111, 1111];
 
     address public owner;
     IRewardToken public immutable token;
-    address public workerSplit;
-    uint64 public epoch = 1;
-    uint64 public epochStart;
-    uint256 public appPool;
-
+    ISharedRewardEpoch public workerSplit;
     mapping(address => bool) public useVerifiers;
     mapping(address => bool) public contributionVerifiers;
+    mapping(uint64 => uint256) public fundingByEpoch;
+    mapping(uint64 => bool) public epochFinalized;
     mapping(uint64 => mapping(uint8 => uint256)) public verifiedUseCount;
     mapping(bytes32 => bool) public operationUsed;
     mapping(uint64 => mapping(uint8 => uint256)) public contributionTotal;
     mapping(uint64 => mapping(uint8 => mapping(address => uint256))) public contributionWeight;
-    mapping(uint64 => mapping(uint8 => mapping(address => bool))) public contributorSeen;
     mapping(uint64 => mapping(uint8 => uint256)) public technologyPool;
     mapping(uint8 => uint256) public categoryRollover;
     mapping(uint64 => mapping(uint8 => uint256)) public claimedAmount;
     mapping(uint64 => mapping(uint8 => mapping(address => bool))) public claimed;
-    mapping(uint64 => mapping(uint8 => bool)) public epochSettled;
 
-    event UseVerifierUpdated(address indexed verifier, bool enabled);
-    event ContributionVerifierUpdated(address indexed verifier, bool enabled);
-    event WorkerSplitUpdated(address indexed workerSplit);
-    event WorkerPoolReceived(uint256 amount);
+    event VerifierUpdated(address indexed verifier, bool enabled, bool forUse);
+    event FundingRecorded(uint64 indexed epoch, uint256 amount);
     event UseRecorded(uint64 indexed epoch, uint8 indexed technology, bytes32 indexed operationId, bytes32 evidenceHash);
-    event ContributionRecorded(uint64 indexed epoch, uint8 indexed technology, address indexed contributor, uint256 weight);
+    event ContributionRecorded(uint64 indexed epoch, uint8 indexed technology, address indexed contributor, uint256 weight, bytes32 evidenceHash);
     event TechnologyEpochFunded(uint64 indexed epoch, uint8 indexed technology, uint256 amount);
-    event RewardClaimed(uint64 indexed epoch, uint8 indexed technology, address indexed contributor, uint256 amount);
     event TechnologyRollover(uint64 indexed epoch, uint8 indexed technology, uint256 amount);
+    event RewardClaimed(uint64 indexed epoch, uint8 indexed technology, address indexed contributor, uint256 amount);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "AppRewards: owner only");
-        _;
-    }
+    modifier onlyOwner() { require(msg.sender == owner, "AppRewards: owner only"); _; }
 
     constructor(address tokenAddress, address workerSplitAddress) {
         require(tokenAddress != address(0) && workerSplitAddress != address(0), "AppRewards: zero address");
         owner = msg.sender;
         token = IRewardToken(tokenAddress);
-        workerSplit = workerSplitAddress;
-        epochStart = uint64(block.timestamp);
+        workerSplit = ISharedRewardEpoch(workerSplitAddress);
     }
 
     function setVerifier(address verifier, bool enabled, bool forUse) external onlyOwner {
         require(verifier != address(0), "AppRewards: zero verifier");
         if (forUse) useVerifiers[verifier] = enabled;
         else contributionVerifiers[verifier] = enabled;
-        if (forUse) emit UseVerifierUpdated(verifier, enabled);
-        else emit ContributionVerifierUpdated(verifier, enabled);
+        emit VerifierUpdated(verifier, enabled, forUse);
     }
 
-    function setWorkerSplit(address workerSplitAddress) external onlyOwner {
-        require(workerSplitAddress != address(0), "AppRewards: zero address");
-        workerSplit = workerSplitAddress;
-        emit WorkerSplitUpdated(workerSplitAddress);
+    /// @dev WorkerSplit mints GEN here before calling this function.
+    function notifyWorkerPool(uint64 fundingEpoch, uint256 amount) external {
+        require(msg.sender == address(workerSplit), "AppRewards: worker split only");
+        require(fundingEpoch > 0 && amount > 0 && !epochFinalized[fundingEpoch], "AppRewards: invalid funding");
+        require(token.balanceOf(address(this)) >= _accountedBalance() + amount, "AppRewards: pool not backed");
+        fundingByEpoch[fundingEpoch] += amount;
+        emit FundingRecorded(fundingEpoch, amount);
     }
 
-    /// @dev WorkerSplit mints actual GEN to this contract before notification.
-    function notifyWorkerPool(uint256 amount) external {
-        require(msg.sender == workerSplit, "AppRewards: worker split only");
-        require(token.balanceOf(address(this)) >= appPool + amount, "AppRewards: pool not funded");
-        appPool += amount;
-        emit WorkerPoolReceived(amount);
-    }
-
-    /// @notice Receives the AppTeam share of the arbitrator fallback. Tokens are
-    /// minted to this contract by WorkerSplit before this callback.
-    function notifyArbitrationFallback(uint256 amount) external {
-        require(msg.sender == workerSplit, "AppRewards: worker split only");
-        require(token.balanceOf(address(this)) >= appPool + amount, "AppRewards: fallback not funded");
-        appPool += amount;
-        emit WorkerPoolReceived(amount);
-    }
-
-    /// @notice Record a user operation only after independent evidence verification.
-    /// operationId must be globally unique; evidenceHash commits to the verifier's evidence.
+    /// @notice Verifiers must validate a user-originated operation against the
+    /// integration's documented evidence policy before submitting its hash.
     function recordProofOfUse(uint64 useEpoch, uint8 technology, bytes32 operationId, bytes32 evidenceHash) external {
         require(useVerifiers[msg.sender], "AppRewards: use verifier only");
-        require(useEpoch == epoch && technology < TECHNOLOGY_COUNT, "AppRewards: invalid epoch or technology");
-        require(operationId != bytes32(0) && evidenceHash != bytes32(0), "AppRewards: empty proof");
-        require(!operationUsed[operationId], "AppRewards: duplicate operation");
+        require(useEpoch == workerSplit.epoch() && technology < TECHNOLOGY_COUNT, "AppRewards: invalid epoch or technology");
+        require(operationId != bytes32(0) && evidenceHash != bytes32(0) && !operationUsed[operationId], "AppRewards: invalid or duplicate operation");
         operationUsed[operationId] = true;
         verifiedUseCount[useEpoch][technology]++;
         emit UseRecorded(useEpoch, technology, operationId, evidenceHash);
     }
 
-    /// @notice Contribution verification is a separate role and measurement from proof of use.
-    function recordContribution(uint64 contributionEpoch, uint8 technology, address contributor, uint256 weight) external {
+    /// @notice Contribution weights are independently reported and evidence-hashed;
+    /// governance voting credits are not consulted.
+    function recordContribution(uint64 contributionEpoch, uint8 technology, address contributor, uint256 weight, bytes32 evidenceHash) external {
         require(contributionVerifiers[msg.sender], "AppRewards: contribution verifier only");
-        require(contributionEpoch == epoch && technology < TECHNOLOGY_COUNT, "AppRewards: invalid epoch or technology");
-        require(contributor != address(0) && weight > 0, "AppRewards: invalid contribution");
-        if (!contributorSeen[contributionEpoch][technology][contributor]) {
-            contributorSeen[contributionEpoch][technology][contributor] = true;
-        }
+        require(contributionEpoch == workerSplit.epoch() && technology < TECHNOLOGY_COUNT, "AppRewards: invalid epoch or technology");
+        require(contributor != address(0) && weight > 0 && evidenceHash != bytes32(0), "AppRewards: invalid contribution");
         contributionWeight[contributionEpoch][technology][contributor] += weight;
         contributionTotal[contributionEpoch][technology] += weight;
-        emit ContributionRecorded(contributionEpoch, technology, contributor, weight);
+        emit ContributionRecorded(contributionEpoch, technology, contributor, weight, evidenceHash);
     }
 
-    /// @notice Allocate this epoch's AppTeam funding only to technologies with
-    /// verified use. Idle amounts remain attributed to their original technology.
-    function finalizeEpoch() external {
-        require(block.timestamp >= epochStart + EPOCH_DURATION, "AppRewards: epoch active");
-        uint64 finalizedEpoch = epoch;
-        uint256 distributable = appPool;
-        appPool = 0;
+    /// @notice Finalize only after WorkerSplit has closed and funded this exact epoch.
+    function finalizeEpoch(uint64 finalizedEpoch) external {
+        require(finalizedEpoch > 0 && finalizedEpoch < workerSplit.epoch(), "AppRewards: epoch still active");
+        require(!epochFinalized[finalizedEpoch], "AppRewards: already finalized");
+        epochFinalized[finalizedEpoch] = true;
+        uint256 distributable = fundingByEpoch[finalizedEpoch];
         uint256 assigned;
         for (uint8 technology; technology < TECHNOLOGY_COUNT; technology++) {
-            uint256 allocation = (distributable * technologyBps[technology]) / BPS;
-            if (technology == TECHNOLOGY_COUNT - 1) allocation = distributable - assigned;
-            else assigned += allocation;
-            uint256 available = allocation + categoryRollover[technology];
-            if (verifiedUseCount[finalizedEpoch][technology] > 0) {
-                technologyPool[finalizedEpoch][technology] = available;
+            uint256 allocation = technology == TECHNOLOGY_COUNT - 1
+                ? distributable - assigned
+                : (distributable * technologyBps[technology]) / BPS;
+            if (technology != TECHNOLOGY_COUNT - 1) assigned += allocation;
+            uint256 amount = allocation + categoryRollover[technology];
+            if (verifiedUseCount[finalizedEpoch][technology] > 0 && contributionTotal[finalizedEpoch][technology] > 0) {
+                technologyPool[finalizedEpoch][technology] = amount;
                 categoryRollover[technology] = 0;
-                emit TechnologyEpochFunded(finalizedEpoch, technology, available);
+                emit TechnologyEpochFunded(finalizedEpoch, technology, amount);
             } else {
-                categoryRollover[technology] = available;
-                emit TechnologyRollover(finalizedEpoch, technology, available);
+                categoryRollover[technology] = amount;
+                emit TechnologyRollover(finalizedEpoch, technology, amount);
             }
         }
-        epoch = finalizedEpoch + 1;
-        epochStart = uint64(block.timestamp);
     }
 
+    /// @notice Allocated rewards remain claimable indefinitely; no settlement can
+    /// move an already-earned liability into another epoch.
     function claim(uint64 claimEpoch, uint8 technology) external {
-        require(claimEpoch < epoch && technology < TECHNOLOGY_COUNT, "AppRewards: invalid epoch or technology");
+        require(epochFinalized[claimEpoch] && technology < TECHNOLOGY_COUNT, "AppRewards: unfinalized epoch or invalid technology");
         require(!claimed[claimEpoch][technology][msg.sender], "AppRewards: already claimed");
         uint256 totalWeight = contributionTotal[claimEpoch][technology];
         uint256 weight = contributionWeight[claimEpoch][technology][msg.sender];
@@ -167,15 +140,12 @@ contract AppTeamRewardDistributor {
         emit RewardClaimed(claimEpoch, technology, msg.sender, reward);
     }
 
-    /// @notice Roll unclaimed/rounding remainder into the same technology after
-    /// the following epoch closes; it cannot leak across technology categories.
-    function settleUnclaimed(uint64 settledEpoch, uint8 technology) external {
-        require(settledEpoch + 1 < epoch && technology < TECHNOLOGY_COUNT, "AppRewards: not settleable");
-        require(!epochSettled[settledEpoch][technology], "AppRewards: already settled");
-        epochSettled[settledEpoch][technology] = true;
-        uint256 remainder = technologyPool[settledEpoch][technology] - claimedAmount[settledEpoch][technology];
-        categoryRollover[technology] += remainder;
-        if (remainder > 0) emit TechnologyRollover(settledEpoch, technology, remainder);
+    function _accountedBalance() internal view returns (uint256 total) {
+        for (uint64 e = 1; e <= workerSplit.epoch(); e++) {
+            total += fundingByEpoch[e];
+            for (uint8 t; t < TECHNOLOGY_COUNT; t++) total += technologyPool[e][t] - claimedAmount[e][t];
+        }
+        for (uint8 t; t < TECHNOLOGY_COUNT; t++) total += categoryRollover[t];
     }
 
     function technologyAllocationBps(uint8 technology) external view returns (uint16) {
