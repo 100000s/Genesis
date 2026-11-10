@@ -2,7 +2,7 @@ import { ethers } from 'ethers';
 
 declare global {
   interface Window {
-    ethereum?: any;
+    ethereum?: ethers.Eip1193Provider;
   }
 }
 
@@ -12,6 +12,9 @@ export type ContractKey =
   | 'WorkerSplit'
   | 'GenesisGovernance'
   | 'AppTeamDAO'
+  | 'AppTeamRewardDistributor'
+  | 'NoteTeamRewardDistributor'
+  | 'NoteTeamDAO'
   | 'GenesisEscrow'
   | 'GenesisIdentityRegistry'
   | 'GenesisValidatorRegistry'
@@ -25,65 +28,85 @@ export type ContractConfig = {
   methods: string[];
 };
 
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
 export const DEFAULT_CONTRACTS: Record<ContractKey, ContractConfig> = {
   GenesisToken: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisToken',
-    description: 'ERC-20 compatible token and mint authority',
-    methods: ['balanceOf(address)', 'symbol()', 'totalSupply()', 'allowance(address,address)']
+    description: 'Genesis ERC-20-compatible token and mint authority',
+    methods: ['balanceOf(address)', 'symbol()', 'totalSupply()', 'allowance(address,address)', 'approve(address,uint256)', 'transfer(address,uint256)']
   },
   GenesisIssuance: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisIssuance',
-    description: 'Claim and issuance ledger for citizenship and state budgets',
-    methods: ['availableFederal(address)', 'availableState(address,uint8)', 'withdraw(uint8,uint8,uint256)']
+    description: 'Citizen/resident claim ledger and ALFRED-adjusted issuance',
+    methods: ['availableFederal(address)', 'availableState(address,uint8)', 'currentYear()', 'LAUNCH_CLAIM_END()', 'withdraw(uint8,uint8,uint256)']
   },
   WorkerSplit: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'WorkerSplit',
-    description: 'Epoch-based worker and app team distribution',
-    methods: ['epoch()', 'recordActivity(uint256)', 'finalizeEpoch()', 'claim(uint64,uint8)']
+    description: 'Monthly epoch authority for 20/20/30/20/10 reward allocations',
+    methods: ['epoch()', 'pool(uint64,uint8)', 'claim(uint64,uint8)', 'participantCount(uint8)', 'distributeBootstrap()']
   },
   GenesisGovernance: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisGovernance',
-    description: 'GIP proposal voting and governance activation gating',
-    methods: ['propose(bytes32,uint8,bytes32,bytes32)', 'vote(bytes32,bool,uint256)', 'resolve(bytes32)']
+    description: 'Genesis Improvement Proposal lifecycle and weighted governance',
+    methods: ['getBootstrapStatus()', 'getProposal(bytes32)', 'propose(bytes32,uint8,bytes32,bytes32)', 'vote(bytes32,bool,uint256)', 'resolve(bytes32)', 'activate(bytes32)']
   },
   AppTeamDAO: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'AppTeamDAO',
-    description: 'App team governance and category allocation',
-    methods: ['getCurrentCycle()', 'allocate(uint8,address,uint256)', 'claim(uint8)']
+    description: 'App Team governance and contribution coordination; reward claims are handled by AppTeamRewardDistributor',
+    methods: ['getCurrentCycle()', 'credits(address)', 'propose(bytes32)', 'vote(bytes32,bool,uint256)', 'execute(bytes32)']
+  },
+  AppTeamRewardDistributor: {
+    address: ZERO_ADDRESS,
+    name: 'AppTeamRewardDistributor',
+    description: 'App technology utilization-gated, contribution-weighted rewards',
+    methods: ['technologyPool(uint64,uint8)', 'contributionWeight(uint64,uint8,address)', 'claim(uint64,uint8)', 'technologyAllocationBps(uint8)']
+  },
+  NoteTeamRewardDistributor: {
+    address: ZERO_ADDRESS,
+    name: 'NoteTeamRewardDistributor',
+    description: 'Note Team 10% hardware, 8% active presence, and 2% maintenance rewards',
+    methods: ['hardwarePool(uint64)', 'presencePool(uint64)', 'claimHardware(uint64,bytes32)', 'claimPresence(uint64,bytes32)']
+  },
+  NoteTeamDAO: {
+    address: ZERO_ADDRESS,
+    name: 'NoteTeamDAO',
+    description: 'Open-ended governance of the Note Team maintenance allocation only',
+    methods: ['treasuryBalance()', 'createProposal(address,uint128,uint64,bytes32)', 'reviewProposal(uint256,bool)', 'approveProposal(uint256)', 'executeGrant(uint256)', 'verifyCompletion(uint256,bytes32)']
   },
   GenesisEscrow: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisEscrow',
-    description: 'Canonical escrow and dispute arbitration',
-    methods: ['createEscrow(address,uint256,bytes32,uint64)', 'fulfillEscrow(uint256,bytes)', 'triggerDefault(uint256)']
+    description: 'Genesis escrow and arbitration settlement',
+    methods: ['nextEscrowId()', 'nextPurchaseId()', 'createEscrow(address,uint256,bytes32,uint64)', 'fulfillEscrow(uint256,bytes)', 'triggerDefault(uint256)', 'initiateSecurePurchase(address,uint256,uint256,uint64)', 'castArbitrationVote(uint256,bool)']
   },
   GenesisIdentityRegistry: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisIdentityRegistry',
-    description: 'Soulbound identity verification and credential routing',
-    methods: ['registerIdentity(uint16,bytes32,bytes32,bytes)', 'registerCredential(address,uint8,bytes32,bytes32,bytes)', 'canClaim(address,uint8)']
+    description: 'Identity and ZK credential registry for claim eligibility',
+    methods: ['identities(address)', 'canClaim(address,uint8)', 'hasCredential(address,uint8)', 'getJurisdiction(address)', 'registerIdentity(uint16,bytes32,bytes32,bytes)']
   },
   GenesisValidatorRegistry: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisValidatorRegistry',
-    description: 'Validator identity, hardware, and staking registry',
-    methods: ['register(bytes32,bytes32,bytes32)', 'registerValidator(address,string)', 'count()']
+    description: 'Validator identity, hardware, geography, and active status registry',
+    methods: ['count()', 'getActiveValidators()', 'validators(address)', 'register(bytes32,bytes32,bytes32)']
   },
   GenesisOracle: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisOracle',
-    description: 'Native TWAP and fiscal-ratio oracle feed',
-    methods: ['getTwapPrice()', 'getTwapMultiplier()', 'getDynamicIssuanceRateBps()']
+    description: 'TWAP and immutable ALFRED budget-ratio oracle',
+    methods: ['getTwapPrice()', 'getTwapMultiplier()', 'getDynamicIssuanceRateBps()', 'federalRatio(uint256)', 'stateRatio(uint8,uint256)']
   },
   GenesisNoteRegistry: {
-    address: '0x0000000000000000000000000000000000000000',
+    address: ZERO_ADDRESS,
     name: 'GenesisNoteRegistry',
-    description: 'Physical-note metadata, issuance, and scan tracking',
+    description: 'Physical note issuance, scan, and replacement metadata',
     methods: ['issued(bytes32)', 'metadata(bytes32)', 'recordScan(bytes32,bytes32,uint64,bytes32,uint16)']
   }
 };
@@ -94,6 +117,9 @@ export const CONTRACT_ORDER: ContractKey[] = [
   'WorkerSplit',
   'GenesisGovernance',
   'AppTeamDAO',
+  'AppTeamRewardDistributor',
+  'NoteTeamRewardDistributor',
+  'NoteTeamDAO',
   'GenesisEscrow',
   'GenesisIdentityRegistry',
   'GenesisValidatorRegistry',
@@ -102,23 +128,32 @@ export const CONTRACT_ORDER: ContractKey[] = [
 ];
 
 export function getRuntimeContracts(): Record<ContractKey, ContractConfig> {
-  const values = Object.fromEntries(
+  return Object.fromEntries(
     CONTRACT_ORDER.map((key) => {
       const envKey = `VITE_${key.toUpperCase()}_ADDRESS`;
       const value = (import.meta.env[envKey] as string | undefined) || DEFAULT_CONTRACTS[key].address;
       return [key, { ...DEFAULT_CONTRACTS[key], address: value }];
     })
   ) as Record<ContractKey, ContractConfig>;
+}
 
-  return values;
+/** Optional expected EVM chain ID, supplied by deployment environment. */
+export function getExpectedChainId(): bigint | null {
+  const configured = import.meta.env.VITE_GENESIS_CHAIN_ID as string | undefined;
+  if (!configured) return null;
+  try {
+    return BigInt(configured);
+  } catch {
+    throw new Error('VITE_GENESIS_CHAIN_ID must be an integer chain ID');
+  }
 }
 
 export function getEthersProvider(): ethers.BrowserProvider | null {
   if (!window.ethereum) return null;
-  return new ethers.BrowserProvider(window.ethereum as any);
+  return new ethers.BrowserProvider(window.ethereum);
 }
 
-export function createContract(address: string, abi: any[]) {
+export function createContract(address: string, abi: ethers.InterfaceAbi) {
   const provider = getEthersProvider();
   if (!provider) return null;
   return new ethers.Contract(address, abi, provider);
