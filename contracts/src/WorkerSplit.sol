@@ -1,86 +1,84 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-interface IWorkerIssuance {
-    function mintWorkerReward(address, uint256) external;
-}
-
+interface IWorkerIssuance { function mintWorkerReward(address recipient, uint256 amount) external; }
 interface IWorkerOracle {
     function getDynamicIssuanceRateBps() external view returns (uint256);
     function getTwapMultiplier() external view returns (uint256);
 }
-
-interface IAppTeamDAO {
-    function notifyWorkerPool(uint256 amount) external;
+interface IWorkerEvidenceVerifier {
+    function verifyContribution(address worker, uint8 kind, uint64 epoch, uint256 weight, bytes32 evidenceHash) external view returns (bool);
 }
+interface IAppRewardSink { function notifyWorkerPool(uint64 fundingEpoch, uint256 amount) external; }
+interface INoteRewardSink { function notifyWorkerPool(uint64 fundingEpoch, uint256 amount) external; }
 
-/// @notice WorkerSplit: Epoch-based 40/30/20/10 worker distribution
-/// with dynamic TWAP-scaled minting and 0.5% base floor per component.
-///
-/// Key design:
-/// - Base pool = activity × 0.5% (50 bps for WorkerSplit component)
-/// - Dynamic scaling: base × getDynamicIssuanceRateBps() / 50 (scale from 50 bps floor)
-/// - TWAP multiplier applied for price-growth-based supply expansion (never < 1.0)
-/// - Inactivity rolls over to next epoch
-/// - Arbitrators only claim if successful; unsuccessful arbitrators automatically rollover
-/// - App Team (30%) allocation routed to AppTeamDAO for category-based distribution
+/// @notice README-aligned monthly reward authority. It freezes field-work weights
+/// and top-level allocation at epoch close. Specialist sinks exclusively handle
+/// App/Note suballocations; claims never expire and are never recycled.
 contract WorkerSplit {
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
-    uint256 public constant BASE_FLOOR_BPS = 50;  // 0.5% floor per component
-    uint256 public constant BOOTSTRAP_POOL = 10_000 ether; // Total bootstrap: 10k GEN
+    uint256 public constant BASE_FLOOR_BPS = 50;
+    uint256 public constant BOOTSTRAP_POOL = 10_000 ether;
     uint64 public constant EPOCH_DURATION = 30 days;
-
-    // Worker type IDs
     uint8 public constant VALIDATOR = 0;
     uint8 public constant VERIFIER = 1;
     uint8 public constant APP = 2;
     uint8 public constant NOTE = 3;
     uint8 public constant ARBITRATOR = 4;
-
-    // Split percentages (sum = 10,000 bps)
-    uint256 public constant VALIDATOR_RATIO = 2000;    // 20%
-    uint256 public constant VERIFIER_RATIO = 2000;     // 20%
-    uint256 public constant APP_RATIO = 3000;          // 30%
-    uint256 public constant NOTE_RATIO = 2000;         // 20%
-    uint256 public constant ARBITRATOR_RATIO = 1000;   // 10%
+    uint256 public constant VALIDATOR_RATIO = 2_000;
+    uint256 public constant VERIFIER_RATIO = 2_000;
+    uint256 public constant APP_RATIO = 3_000;
+    uint256 public constant NOTE_RATIO = 2_000;
+    uint256 public constant ARBITRATOR_RATIO = 1_000;
 
     address public owner;
     IWorkerIssuance public immutable issuance;
     IWorkerOracle public immutable oracle;
-    IAppTeamDAO public appTeamDAO;
-
+    IWorkerEvidenceVerifier public evidenceVerifier;
+    IAppRewardSink public appRewardSink;
+    INoteRewardSink public noteRewardSink;
+    address public chainMaintainerRecipient;
     uint64 public epoch = 1;
     uint64 public epochStart;
-    uint256 public rollover;
     uint256 public activity;
-
+    bool public bootstrapDistributed;
     mapping(address => bool) public reporters;
+    mapping(address => bool) public registrationAgents;
+    mapping(address => bool) public arbitrationSources;
     mapping(uint8 => address[]) private members;
-    mapping(address => uint8) public memberKind;  // 0 = unregistered, 1-5 = VALIDATOR-ARBITRATOR+1
-    mapping(uint64 => mapping(uint8 => uint256)) public pool;  // epoch => kind => pool amount
-    mapping(uint64 => mapping(uint8 => mapping(address => bool))) public claimed; // epoch => kind => user => claimed
-    mapping(uint64 => mapping(address => bool)) public successfulArbitrator; // epoch => arbitrator => successful
+    mapping(address => uint8) public memberKind;
+    mapping(uint64 => mapping(uint8 => uint256)) public pool;
+    mapping(uint8 => uint256) public categoryRollover;
+    mapping(uint8 => uint256) public bootstrapPending;
+    uint256 public bootstrapArbitrationRollover;
+    mapping(uint64 => mapping(uint8 => mapping(address => uint256))) public contributionWeight;
+    mapping(uint64 => mapping(uint8 => uint256)) public totalContributionWeight;
+    mapping(uint64 => mapping(uint8 => mapping(address => bool))) public claimed;
+    mapping(uint64 => mapping(uint8 => uint256)) public claimedAmount;
+    mapping(uint64 => mapping(address => bool)) public successfulArbitrator;
+    mapping(uint64 => mapping(bytes32 => mapping(address => bool))) public arbitrationOutcomeRecorded;
+    mapping(uint64 => uint256) public successfulArbitratorCount;
+    mapping(uint64 => bool) public epochFinalized;
+    mapping(uint64 => uint256) public arbitratorFallbackAmount;
 
-    event ActivityReported(address indexed reporter, uint256 amount);
-    event NativeVolumeReported(address indexed reporter, uint256 amount);
-    event EpochFinalized(uint64 indexed epoch, uint256 workerPool, uint256 dynamicRateBps, uint256 twapMul);
-    event RewardClaimed(uint64 indexed epoch, uint8 indexed kind, address indexed member, uint256 amount);
     event ReporterUpdated(address indexed reporter, bool enabled);
+    event RegistrationAgentUpdated(address indexed agent, bool enabled);
+    event ArbitrationSourceUpdated(address indexed source, bool enabled);
+    event EvidenceVerifierUpdated(address indexed verifier);
+    event RewardSinksUpdated(address indexed appSink, address indexed noteSink, address chainMaintainer);
     event MemberRegistered(address indexed member, uint8 indexed kind);
-    event ArbitratorMarked(uint64 indexed epoch, address indexed arbitrator, bool successful);
-    event AppTeamDAONotified(uint64 indexed epoch, uint256 amount);
-    event AppTeamDAOUpdated(address indexed newDAO);
+    event ActivityReported(address indexed reporter, uint256 amount);
+    event ContributionRecorded(uint64 indexed epoch, uint8 indexed kind, address indexed member, uint256 weight, bytes32 evidenceHash);
+    event ArbitratorMarked(uint64 indexed epoch, bytes32 indexed outcomeId, address indexed arbitrator);
+    event ArbitrationFallback(uint64 indexed epoch, uint256 amount);
+    event BootstrapDistributed(uint256 amount);
+    event EpochFinalized(uint64 indexed epoch, uint256 workerPool, uint256 dynamicRateBps, uint256 twapMul);
+    event CategoryRolledOver(uint64 indexed epoch, uint8 indexed kind, uint256 amount);
+    event RewardClaimed(uint64 indexed epoch, uint8 indexed kind, address indexed member, uint256 amount);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "WorkerSplit: owner only");
-        _;
-    }
-
-    modifier onlyReporter() {
-        require(reporters[msg.sender] || msg.sender == owner, "WorkerSplit: reporter");
-        _;
-    }
+    modifier onlyOwner() { require(msg.sender == owner, "WorkerSplit: owner only"); _; }
+    modifier onlyReporter() { require(reporters[msg.sender] || msg.sender == owner, "WorkerSplit: reporter only"); _; }
 
     constructor(address issuanceAddress, address oracleAddress) {
         require(issuanceAddress != address(0) && oracleAddress != address(0), "WorkerSplit: zero address");
@@ -91,139 +89,136 @@ contract WorkerSplit {
     }
 
     function setReporter(address who, bool enabled) external onlyOwner {
-        reporters[who] = enabled;
-        emit ReporterUpdated(who, enabled);
+        require(who != address(0), "WorkerSplit: zero reporter"); reporters[who] = enabled; emit ReporterUpdated(who, enabled);
+    }
+    function setRegistrationAgent(address who, bool enabled) external onlyOwner {
+        require(who != address(0), "WorkerSplit: zero agent"); registrationAgents[who] = enabled; emit RegistrationAgentUpdated(who, enabled);
+    }
+    function setArbitrationSource(address who, bool enabled) external onlyOwner {
+        require(who != address(0), "WorkerSplit: zero source"); arbitrationSources[who] = enabled; emit ArbitrationSourceUpdated(who, enabled);
+    }
+    function setEvidenceVerifier(address verifier) external onlyOwner {
+        require(verifier != address(0), "WorkerSplit: zero verifier"); evidenceVerifier = IWorkerEvidenceVerifier(verifier); emit EvidenceVerifierUpdated(verifier);
+    }
+    function setRewardSinks(address appSink, address noteSink, address chainMaintainer) external onlyOwner {
+        require(appSink != address(0) && noteSink != address(0) && chainMaintainer != address(0), "WorkerSplit: zero address");
+        appRewardSink = IAppRewardSink(appSink); noteRewardSink = INoteRewardSink(noteSink); chainMaintainerRecipient = chainMaintainer;
+        emit RewardSinksUpdated(appSink, noteSink, chainMaintainer);
     }
 
-    /// @notice Set or update the AppTeamDAO address
-    function setAppTeamDAO(address daoAddress) external onlyOwner {
-        require(daoAddress != address(0), "WorkerSplit: zero address");
-        appTeamDAO = IAppTeamDAO(daoAddress);
-        emit AppTeamDAOUpdated(daoAddress);
+    /// @notice One-time, nominal 10,000 GEN bootstrap split using the same top-level
+    /// ratios as monthly rewards. Validator/verifier shares are permanent epoch-1
+    /// participation pools; App/Note shares are funded into their dedicated sinks.
+    /// The arbitrator share is held as a rollover until the first eligible outcome.
+    function distributeBootstrap() external onlyOwner {
+        require(!bootstrapDistributed && epoch == 1 && !epochFinalized[1], "WorkerSplit: bootstrap unavailable");
+        require(address(appRewardSink) != address(0) && address(noteRewardSink) != address(0), "WorkerSplit: reward sinks unset");
+        bootstrapDistributed = true;
+        bootstrapPending[VALIDATOR] = (BOOTSTRAP_POOL * VALIDATOR_RATIO) / BPS;
+        bootstrapPending[VERIFIER] = (BOOTSTRAP_POOL * VERIFIER_RATIO) / BPS;
+        uint256 appAmount = (BOOTSTRAP_POOL * APP_RATIO) / BPS;
+        uint256 noteAmount = (BOOTSTRAP_POOL * NOTE_RATIO) / BPS;
+        bootstrapArbitrationRollover = BOOTSTRAP_POOL - bootstrapPending[VALIDATOR] - bootstrapPending[VERIFIER] - appAmount - noteAmount;
+        if (appAmount > 0) { issuance.mintWorkerReward(address(appRewardSink), appAmount); appRewardSink.notifyWorkerPool(1, appAmount); }
+        if (noteAmount > 0) { issuance.mintWorkerReward(address(noteRewardSink), noteAmount); noteRewardSink.notifyWorkerPool(1, noteAmount); }
+        emit BootstrapDistributed(BOOTSTRAP_POOL);
     }
 
-    /// @notice Register a worker (idempotent)
-    function register(uint8 kind) external {
-        require(kind <= ARBITRATOR, "WorkerSplit: invalid kind");
-        require(memberKind[msg.sender] == 0, "WorkerSplit: already registered");
-
-        memberKind[msg.sender] = kind + 1; // Store as 1-indexed for distinction
-        members[kind].push(msg.sender);
-        emit MemberRegistered(msg.sender, kind);
+    function registerWorker(address member, uint8 kind) external {
+        require(msg.sender == owner || registrationAgents[msg.sender], "WorkerSplit: registration agent only");
+        require(member != address(0) && kind <= ARBITRATOR, "WorkerSplit: invalid registration");
+        require(memberKind[member] == 0, "WorkerSplit: already registered");
+        memberKind[member] = kind + 1; members[kind].push(member); emit MemberRegistered(member, kind);
     }
 
-    /// @notice Report on-chain activity volume
     function recordActivity(uint256 amount) external onlyReporter {
-        activity += amount;
-        emit ActivityReported(msg.sender, amount);
+        require(amount > 0, "WorkerSplit: zero activity"); activity += amount; emit ActivityReported(msg.sender, amount);
     }
 
-    /// @notice Report native Genesis token volume
-    function recordNativeVolume(uint256 amount) external onlyReporter {
-        activity += amount;
-        emit NativeVolumeReported(msg.sender, amount);
+    /// @notice Reporters submit field evidence; a configured verifier checks the
+    /// evidence commitment against automated telemetry/registry adapters.
+    function recordContribution(uint64 contributionEpoch, uint8 kind, address member, uint256 weight, bytes32 evidenceHash) external onlyReporter {
+        require(contributionEpoch == epoch && kind <= VERIFIER, "WorkerSplit: inactive epoch or kind");
+        require(memberKind[member] == kind + 1 && weight > 0 && evidenceHash != bytes32(0), "WorkerSplit: invalid contribution");
+        require(address(evidenceVerifier) != address(0), "WorkerSplit: evidence verifier unset");
+        require(evidenceVerifier.verifyContribution(member, kind, contributionEpoch, weight, evidenceHash), "WorkerSplit: evidence rejected");
+        contributionWeight[contributionEpoch][kind][member] += weight;
+        totalContributionWeight[contributionEpoch][kind] += weight;
+        emit ContributionRecorded(contributionEpoch, kind, member, weight, evidenceHash);
     }
 
-    /// @notice Mark an arbitrator as successful for a completed epoch
-    function markSuccessfulArbitrator(uint64 claimEpoch, address arbitrator) external onlyReporter {
-        require(claimEpoch < epoch, "WorkerSplit: future epoch");
-        successfulArbitrator[claimEpoch][arbitrator] = true;
-        emit ArbitratorMarked(claimEpoch, arbitrator, true);
+    /// @notice Escrow assigns each participant to the epoch current at final settlement.
+    function markSuccessfulArbitrator(uint64 completionEpoch, bytes32 outcomeId, address arbitrator) external {
+        require(arbitrationSources[msg.sender], "WorkerSplit: arbitration source only");
+        require(completionEpoch == epoch && outcomeId != bytes32(0), "WorkerSplit: epoch closed or empty outcome");
+        require(arbitrator != address(0) && memberKind[arbitrator] == ARBITRATOR + 1, "WorkerSplit: arbitrator not registered");
+        require(!epochFinalized[completionEpoch] && !arbitrationOutcomeRecorded[completionEpoch][outcomeId][arbitrator], "WorkerSplit: duplicate or finalized");
+        arbitrationOutcomeRecorded[completionEpoch][outcomeId][arbitrator] = true;
+        if (!successfulArbitrator[completionEpoch][arbitrator]) { successfulArbitrator[completionEpoch][arbitrator] = true; successfulArbitratorCount[completionEpoch]++; }
+        emit ArbitratorMarked(completionEpoch, outcomeId, arbitrator);
     }
 
-    /// @notice Finalize epoch and compute pools with dynamic TWAP scaling
     function finalizeEpoch() external {
         require(block.timestamp >= epochStart + EPOCH_DURATION, "WorkerSplit: epoch active");
-
-        // Base pool = activity × 0.5% (50 bps for WorkerSplit component)
+        uint64 closed = epoch; epochFinalized[closed] = true;
         uint256 base = (activity * BASE_FLOOR_BPS) / BPS;
-
-        // Get dynamic issuance rate (100 bps floor, scaled by TWAP)
         uint256 dynamicBps = oracle.getDynamicIssuanceRateBps();
-
-        // WorkerSplit's share of dynamic rate (0.5% of total 1.0%)
-        // Scale from dynamic bps back to 50 bps floor basis
-        uint256 scaleFactor = (dynamicBps * WAD) / (2 * BASE_FLOOR_BPS); // 2 because split 50/50 with GenesisIssuance
-        uint256 scaledPool = (base * scaleFactor) / WAD;
-
-        // Apply TWAP multiplier (never < 1.0)
+        uint256 scaleFactor = (dynamicBps * WAD) / (2 * BASE_FLOOR_BPS);
         uint256 twapMul = oracle.getTwapMultiplier();
-        scaledPool = (scaledPool * twapMul) / WAD;
-
-        // Add rollover from prior epoch
-        scaledPool += rollover;
-        rollover = 0;
-
-        // Allocate to each worker type
-        pool[epoch][VALIDATOR] = (scaledPool * VALIDATOR_RATIO) / BPS;
-        pool[epoch][VERIFIER] = (scaledPool * VERIFIER_RATIO) / BPS;
-        pool[epoch][APP] = (scaledPool * APP_RATIO) / BPS;
-        pool[epoch][NOTE] = (scaledPool * NOTE_RATIO) / BPS;
-        pool[epoch][ARBITRATOR] = (scaledPool * ARBITRATOR_RATIO) / BPS;
-
-        // Notify AppTeamDAO of its allocation (30%)
-        uint256 appAllocation = pool[epoch][APP];
-        if (address(appTeamDAO) != address(0) && appAllocation > 0) {
-            appTeamDAO.notifyWorkerPool(appAllocation);
-            emit AppTeamDAONotified(epoch, appAllocation);
-        }
-
-        activity = 0;
-        epoch++;
-        epochStart = uint64(block.timestamp);
-
-        emit EpochFinalized(epoch - 1, scaledPool, dynamicBps, twapMul);
+        uint256 scaledPool = (((base * scaleFactor) / WAD) * twapMul) / WAD;
+        _allocateWeighted(closed, VALIDATOR, (scaledPool * VALIDATOR_RATIO) / BPS);
+        _allocateWeighted(closed, VERIFIER, (scaledPool * VERIFIER_RATIO) / BPS);
+        require(address(appRewardSink) != address(0) && address(noteRewardSink) != address(0), "WorkerSplit: reward sinks unset");
+        uint256 appAmount = (scaledPool * APP_RATIO) / BPS;
+        uint256 noteAmount = (scaledPool * NOTE_RATIO) / BPS;
+        if (appAmount > 0) { issuance.mintWorkerReward(address(appRewardSink), appAmount); appRewardSink.notifyWorkerPool(closed, appAmount); }
+        if (noteAmount > 0) { issuance.mintWorkerReward(address(noteRewardSink), noteAmount); noteRewardSink.notifyWorkerPool(closed, noteAmount); }
+        uint256 freshArbitrator = (scaledPool * ARBITRATOR_RATIO) / BPS;
+        if (successfulArbitratorCount[closed] > 0) {
+            pool[closed][ARBITRATOR] = freshArbitrator + bootstrapArbitrationRollover;
+            bootstrapArbitrationRollover = 0;
+        } else if (freshArbitrator > 0) _applyArbitratorFallback(closed, freshArbitrator);
+        activity = 0; epoch = closed + 1; epochStart = uint64(block.timestamp);
+        emit EpochFinalized(closed, scaledPool, dynamicBps, twapMul);
     }
 
-    /// @notice Claim worker reward for a completed epoch
+    function _allocateWeighted(uint64 closed, uint8 kind, uint256 freshAmount) internal {
+        uint256 amount = freshAmount + categoryRollover[kind] + bootstrapPending[kind];
+        categoryRollover[kind] = 0;
+        if (amount == 0) return;
+        if (totalContributionWeight[closed][kind] == 0) { categoryRollover[kind] = amount; emit CategoryRolledOver(closed, kind, amount); }
+        else { pool[closed][kind] = amount; bootstrapPending[kind] = 0; }
+    }
+
+    function _applyArbitratorFallback(uint64 closed, uint256 amount) internal {
+        require(chainMaintainerRecipient != address(0), "WorkerSplit: fallback recipient unset");
+        uint256 chainShare = (amount * 4_000) / BPS; uint256 appShare = (amount * 3_000) / BPS; uint256 noteShare = amount - chainShare - appShare;
+        if (chainShare > 0) issuance.mintWorkerReward(chainMaintainerRecipient, chainShare);
+        if (appShare > 0) { issuance.mintWorkerReward(address(appRewardSink), appShare); appRewardSink.notifyWorkerPool(closed, appShare); }
+        if (noteShare > 0) { issuance.mintWorkerReward(address(noteRewardSink), noteShare); noteRewardSink.notifyWorkerPool(closed, noteShare); }
+        arbitratorFallbackAmount[closed] = amount; emit ArbitrationFallback(closed, amount);
+    }
+
     function claim(uint64 claimEpoch, uint8 kind) external {
-        require(claimEpoch < epoch, "WorkerSplit: future epoch");
-        require(kind <= ARBITRATOR, "WorkerSplit: invalid kind");
+        require(epochFinalized[claimEpoch] && kind <= ARBITRATOR, "WorkerSplit: invalid or open epoch");
+        require(kind != APP && kind != NOTE, "WorkerSplit: use dedicated distributor");
+        require(memberKind[msg.sender] == kind + 1, "WorkerSplit: wrong worker category");
         require(!claimed[claimEpoch][kind][msg.sender], "WorkerSplit: already claimed");
-        require(memberKind[msg.sender] > 0, "WorkerSplit: not registered");
-
-        uint256 amount = 0;
-
+        uint256 amount;
         if (kind == ARBITRATOR) {
-            // Arbitrators: only successful ones claim; unsuccessful rollover automatically
-            if (successfulArbitrator[claimEpoch][msg.sender]) {
-                // Count successful arbitrators in this epoch
-                uint256 successCount = 0;
-                for (uint256 i = 0; i < members[ARBITRATOR].length; i++) {
-                    if (successfulArbitrator[claimEpoch][members[ARBITRATOR][i]]) {
-                        successCount++;
-                    }
-                }
-                require(successCount > 0, "WorkerSplit: no successful arbitrators");
-                amount = pool[claimEpoch][ARBITRATOR] / successCount;
-            } else {
-                // Non-successful arbitrators don't claim; their share rolls over
-                revert("WorkerSplit: not successful arbitrator");
-            }
-        } else if (kind == APP) {
-            // App Team members do not claim directly; they claim via AppTeamDAO.claim(category)
-            revert("WorkerSplit: APP workers claim via AppTeamDAO");
+            uint256 count = successfulArbitratorCount[claimEpoch];
+            require(successfulArbitrator[claimEpoch][msg.sender] && count > 0, "WorkerSplit: not eligible arbitrator");
+            amount = pool[claimEpoch][kind] / count;
         } else {
-            // Other workers (Validators, Verifiers, Note team): split equally among all registered for this kind
-            uint256 memberCount = members[kind].length;
-            require(memberCount > 0, "WorkerSplit: no members");
-            amount = pool[claimEpoch][kind] / memberCount;
+            uint256 total = totalContributionWeight[claimEpoch][kind]; uint256 weight = contributionWeight[claimEpoch][kind][msg.sender];
+            require(total > 0 && weight > 0 && pool[claimEpoch][kind] > 0, "WorkerSplit: no allocated contribution reward");
+            amount = (pool[claimEpoch][kind] * weight) / total;
         }
-
-        require(amount > 0, "WorkerSplit: zero amount");
-
-        claimed[claimEpoch][kind][msg.sender] = true;
-        issuance.mintWorkerReward(msg.sender, amount);
-        emit RewardClaimed(claimEpoch, kind, msg.sender, amount);
+        require(amount > 0, "WorkerSplit: zero reward");
+        claimed[claimEpoch][kind][msg.sender] = true; claimedAmount[claimEpoch][kind] += amount;
+        issuance.mintWorkerReward(msg.sender, amount); emit RewardClaimed(claimEpoch, kind, msg.sender, amount);
     }
 
-    /// @notice Get member count for a worker type
-    function participantCount(uint8 kind) external view returns (uint256) {
-        return members[kind].length;
-    }
-
-    /// @notice Get list of members for a worker type (view only)
-    function getMembers(uint8 kind) external view returns (address[] memory) {
-        return members[kind];
-    }
+    function participantCount(uint8 kind) external view returns (uint256) { return members[kind].length; }
+    function getMembers(uint8 kind) external view returns (address[] memory) { return members[kind]; }
 }
